@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from planner_atlas.data import ActionStats, denormalize_actions, unpack_action_blocks
-from planner_atlas.planning import cem, model_action_bounds, random_shooting
+from planner_atlas.planning import cem, model_action_bounds, random_shooting, sample_proposal
 
 # Asymmetric bounds, and a y-range narrower than the proposal's unit std.
 STATS = ActionStats(mean=torch.tensor([0.3, -0.2]), std=torch.tensor([0.5, 2.0]))
@@ -152,3 +152,20 @@ def test_chunked_scoring_does_not_change_the_plan() -> None:
 def test_cem_rejects_invalid_parameters(overrides) -> None:
     with pytest.raises(ValueError):
         run_cem(FakeModel(quadratic(torch.zeros(2, 10))), **overrides)
+
+
+def test_planners_sample_with_the_shared_proposal_sampler() -> None:
+    model = FakeModel(quadratic(torch.zeros(2, 10)))
+    result = run_cem(model, num_samples=50)
+    first_iteration = sample_proposal(
+        result.initial, num_samples=50, bounds=BOUNDS, generator=torch.Generator().manual_seed(0)
+    )
+    assert torch.equal(model.candidates[0], first_iteration)
+
+
+def test_single_iteration_cem_equals_paired_random_shooting() -> None:
+    # Separate generators with equal seeds: paired random innovations.
+    shooting = run_random_shooting(FakeModel(quadratic(torch.ones(2, 10))), num_samples=64)
+    single = run_cem(FakeModel(quadratic(torch.ones(2, 10))), num_samples=64, iterations=1)
+    assert torch.equal(shooting.actions, single.actions)
+    assert shooting.predicted_cost == single.predicted_cost

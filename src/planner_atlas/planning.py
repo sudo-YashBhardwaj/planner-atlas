@@ -1,13 +1,14 @@
 """Latent planners for the reference LeWM: random shooting and bounded CEM.
 
-A plan is [H, 10]: H action blocks in the model's normalized action space. Both planners
-sample plans from a diagonal Gaussian and clamp them to the model-space image of the raw action
+A plan is [H, 10]: H action blocks in the model's normalized action space. Both planners draw
+bounded proposal samples: a diagonal Gaussian clamped to the model-space image of the raw action
 bounds [-1, 1], so every plan they evaluate or return is executable. They only roll out cached
 latents and never encode images.
 
 A CEM run with N samples and I iterations evaluates N * I plans (PlanResult.model_evaluations);
 random shooting with that many samples from the same initial proposal is its matched control.
-With identically seeded generators, its first N plans are exactly CEM's first iteration.
+Paired random innovations: separate generators with the same seed give both planners the same
+underlying noise, so random shooting's first N samples are exactly CEM's first iteration.
 """
 
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ from planner_atlas.models.reference_lewm import ACTION_DIM, ReferenceLeWM
 
 @dataclass(frozen=True)
 class Proposal:
-    """Diagonal Gaussian over plans: mean and std [H, 10], on the CPU. Samples are clamped."""
+    """Pre-clamp diagonal Gaussian over plans: mean and std [H, 10], on the CPU."""
 
     mean: torch.Tensor
     std: torch.Tensor
@@ -73,12 +74,10 @@ def random_shooting(
     """Lowest-cost plan among num_samples independent samples of the initial proposal."""
     if horizon < 1 or num_samples < 1:
         raise ValueError("expected positive horizon and num_samples")
-    mean = torch.zeros(horizon, ACTION_DIM, device=latent.device)
-    std = torch.ones_like(mean)
-    plans = _sample(mean, std, num_samples, bounds, generator)
+    initial = _initial_proposal(horizon)
+    plans = sample_proposal(initial, num_samples=num_samples, bounds=bounds, generator=generator)
     costs = _score(model, latent, goal, plans, score_batch_size)
     best = costs.argmin()
-    initial = Proposal(mean.cpu(), std.cpu())
     return PlanResult(plans[best], costs[best].item(), num_samples, initial, initial)
 
 
@@ -108,43 +107,49 @@ def cem(
             "expected positive horizon, num_samples, iterations; elite_fraction in (0, 1]"
         )
     num_elites = max(1, int(num_samples * elite_fraction))
-    mean = torch.zeros(horizon, ACTION_DIM, device=latent.device)
-    std = torch.ones_like(mean)
-    initial = Proposal(mean.cpu(), std.cpu())
+    initial = proposal = _initial_proposal(horizon)
     history, best_plans = [], []
     for _ in range(iterations):
-        plans = _sample(mean, std, num_samples, bounds, generator)
+        plans = sample_proposal(
+            proposal, num_samples=num_samples, bounds=bounds, generator=generator
+        )
         costs = _score(model, latent, goal, plans, score_batch_size)
         elite_costs, elite_indices = costs.topk(num_elites, largest=False)
-        proposal = Proposal(mean.cpu(), std.cpu())
         history.append(CEMIteration(proposal, elite_costs[0].item(), elite_costs.mean().item()))
         best_plans.append(plans[elite_indices[0]])
         elites = plans[elite_indices]
-        mean = elites.mean(dim=0)
         std = elites.std(dim=0, correction=0).clamp(min=min_std)
+        proposal = Proposal(elites.mean(dim=0).cpu(), std.cpu())
     best = min(range(iterations), key=lambda i: history[i].best_cost)
-    final = Proposal(mean.cpu(), std.cpu())
     return PlanResult(
         best_plans[best],
         history[best].best_cost,
         num_samples * iterations,
         initial,
-        final,
+        proposal,
         tuple(history),
     )
 
 
-def _sample(
-    mean: torch.Tensor,
-    std: torch.Tensor,
+def sample_proposal(
+    proposal: Proposal,
+    *,
     num_samples: int,
     bounds: tuple[torch.Tensor, torch.Tensor],
     generator: torch.Generator,
 ) -> torch.Tensor:
-    """Plans [num_samples, H, 10] from N(mean, std), clamped to bounds."""
-    noise = torch.randn((num_samples, *mean.shape), generator=generator, device=mean.device)
+    """Bounded proposal samples [num_samples, H, 10]: mean + std * epsilon, clamped to bounds.
+
+    Samples are drawn on the bounds' device, which generator must share.
+    """
     low, high = bounds
+    mean, std = proposal.mean.to(low.device), proposal.std.to(low.device)
+    noise = torch.randn((num_samples, *mean.shape), generator=generator, device=low.device)
     return (mean + std * noise).clamp(low, high)
+
+
+def _initial_proposal(horizon: int) -> Proposal:
+    return Proposal(torch.zeros(horizon, ACTION_DIM), torch.ones(horizon, ACTION_DIM))
 
 
 def _score(
