@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+.venv
+dist/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Local environment
+.env
+.env.*
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Machine-local data and experiment outputs. Root-anchored so same-named code packages stay
+# tracked; no trailing slash so symlinks into local storage are ignored too.
+/data
+/datasets
+/checkpoints
+/runs
+/artifacts
+/outputs
+
+# Checkpoints
+*.ckpt
+*.pt
+*.pth
