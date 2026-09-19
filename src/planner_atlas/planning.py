@@ -19,8 +19,10 @@ from planner_atlas.data import (
     BLOCK_STEPS,
     ENV_ACTION_DIM,
     ActionStats,
+    denormalize_actions,
     normalize_actions,
     pack_action_blocks,
+    unpack_action_blocks,
 )
 from planner_atlas.models.reference_lewm import ACTION_DIM, ReferenceLeWM
 
@@ -57,6 +59,16 @@ def model_action_bounds(
     raw = torch.tensor([-1.0, 1.0]).view(2, 1, 1).expand(2, BLOCK_STEPS, ENV_ACTION_DIM)
     low, high = pack_action_blocks(normalize_actions(raw, stats))
     return low.to(device), high.to(device)
+
+
+def bound_fraction(blocks: torch.Tensor, stats: ActionStats, *, tolerance: float = 1e-5) -> float:
+    """Fraction of the raw action coordinates of plans [..., 10] that sit at a bound of [-1, 1].
+
+    Plans made of clamped samples are the proposal pressing against the action constraint rather
+    than shaping a trajectory inside it.
+    """
+    actions = denormalize_actions(unpack_action_blocks(blocks), stats)
+    return float((actions.abs() >= 1.0 - tolerance).to(torch.float64).mean())
 
 
 @torch.no_grad()

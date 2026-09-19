@@ -3,7 +3,7 @@ import pytest
 import torch
 
 from planner_atlas.atlas import atlas_metrics, audit_samples, pairwise_rank_agreement
-from planner_atlas.evaluation import CandidateEvaluation
+from planner_atlas.evaluation import CandidateEvaluation, tworoom_outcome
 from planner_atlas.planning import Proposal, cem, random_shooting
 
 BOUNDS = (torch.full((10,), -2.0), torch.full((10,), 2.0))
@@ -12,14 +12,14 @@ FINAL = Proposal(torch.full((3, 10), 0.5), torch.full((3, 10), 0.1))
 
 
 def evaluation(predicted, realized, rollout_error, distance) -> CandidateEvaluation:
-    n = len(predicted)
+    """Candidates whose TwoRoom outcome is a final agent-goal distance."""
+    outcomes = [tworoom_outcome(np.array([d, 0.0]), np.zeros(2), reached=False) for d in distance]
     return CandidateEvaluation(
         predicted_cost=np.array(predicted, dtype=float),
         realized_cost=np.array(realized, dtype=float),
         rollout_error=np.array(rollout_error, dtype=float),
-        terminal_error=np.zeros(n),
-        distance=np.array(distance, dtype=float),
-        reached=np.zeros(n, dtype=bool),
+        terminal_error=np.zeros(len(predicted)),
+        task={key: np.array([outcome[key] for outcome in outcomes]) for key in outcomes[0]},
     )
 
 
@@ -46,6 +46,7 @@ def test_atlas_metrics_on_hand_computed_values() -> None:
     metrics = atlas_metrics(selected, initial, final)
     assert metrics["selected_optimism"] == 4.0
     assert metrics["selected_task_cost"] == 10.0 / 224.0 and metrics["selected_success"] is True
+    assert metrics["selected_task_distance"] == 10.0 and metrics["selected_reached_goal"] is False
     assert metrics["q0_mean_optimism"] == 0.0
     assert metrics["q0_mean_rollout_error"] == pytest.approx(0.25)
     assert metrics["selection_amplification"] == 4.0

@@ -7,13 +7,15 @@ import torch
 
 from planner_atlas.data import ActionStats
 from planner_atlas.evaluation import (
+    ARENA_SIZE,
     GOAL_OFFSET,
     SUCCESS_RADIUS,
     TwoRoomCase,
     execute_blocks,
     frames_to_tensor,
-    run_mpc,
+    run_tworoom_mpc,
     sample_tworoom_cases,
+    tworoom_outcome,
 )
 
 IDENTITY = ActionStats(mean=torch.zeros(2), std=torch.ones(2))
@@ -66,7 +68,7 @@ def test_execute_blocks_takes_five_raw_actions_per_block_in_time_order() -> None
     frames, infos, reached = execute_blocks(env, blocks, stats)
     raw = blocks.view(10, 2) * stats.std + stats.mean
     np.testing.assert_allclose(np.stack(env.actions), raw.numpy(), rtol=0, atol=1e-7)
-    assert [frame[0, 0, 0] for frame in frames] == [5, 10] and len(infos) == 2
+    assert [frame[0, 0, 0] for frame in frames] == [5, 10] and len(infos) == 10
     assert reached  # and execution continued past the termination to keep block alignment
 
     one_block = FakeEnv()
@@ -81,6 +83,17 @@ def test_execute_blocks_refuses_non_executable_actions() -> None:
     assert env.actions == []
 
 
+def test_tworoom_outcome_is_the_final_distance_and_its_own_success_radius() -> None:
+    goal = np.array([100.0, 100.0])
+    near = tworoom_outcome(np.array([100.0, 100.0 - SUCCESS_RADIUS + 0.1]), goal, reached=True)
+    assert near["task_distance"] == pytest.approx(SUCCESS_RADIUS - 0.1)
+    assert near["task_cost"] == pytest.approx((SUCCESS_RADIUS - 0.1) / ARENA_SIZE)
+    assert near["success"] and near["reached_goal"]
+
+    far = tworoom_outcome(np.array([100.0, 100.0 + SUCCESS_RADIUS]), goal, reached=False)
+    assert not far["success"] and not far["reached_goal"]  # the radius is strict
+
+
 def test_mpc_stops_mid_block_at_success_and_replans_only_between_blocks() -> None:
     case = TwoRoomCase(0, 0, GOAL_OFFSET, np.zeros(2), np.full(2, 50.0), None, None)
     model = SimpleNamespace(encode=lambda frames: torch.zeros(*frames.shape[:2], 192))
@@ -92,13 +105,15 @@ def test_mpc_stops_mid_block_at_success_and_replans_only_between_blocks() -> Non
             planned_at.append(len(env.actions))
             return SimpleNamespace(actions=torch.zeros(5, 10))
 
-        return run_mpc(env, model, case, IDENTITY, torch.zeros(1, 192), plan), planned_at
+        result = run_tworoom_mpc(env, model, case, IDENTITY, torch.zeros(1, 192), plan)
+        return result, planned_at
 
     result, planned_at = run(FakeEnv(terminate_at=7))  # second raw action of the second block
-    assert planned_at == [0, 5] and result.success and result.raw_steps == 7
+    assert planned_at == [0, 5] and result.task["reached_goal"] and result.raw_steps == 7
 
     result, planned_at = run(FakeEnv())
-    assert planned_at == list(range(0, 50, 5)) and not result.success and result.raw_steps == 50
+    assert planned_at == list(range(0, 50, 5))
+    assert not result.task["reached_goal"] and result.raw_steps == 50
 
 
 def test_case_sampling_is_deterministic_and_skips_solved_starts(tmp_path) -> None:

@@ -32,3 +32,11 @@ def set_state_and_goal(env: gym.Env, state: np.ndarray, goal_state: np.ndarray) 
     """
     env.unwrapped._set_state(state)
     env.unwrapped._set_goal_state(goal_state)
+
+
+def env_state(env: gym.Env) -> np.ndarray:
+    """The environment's own state, read without stepping, through the same private accessor.
+
+    PushT reports [agent xy, block xy, block angle, agent velocity].
+    """
+    return env.unwrapped._get_obs()
