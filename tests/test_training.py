@@ -18,6 +18,7 @@ from planner_atlas.training import (
     load_dynamics,
     load_latent_cache,
     predictor_loss,
+    protocol_metadata,
     save_dynamics,
     split_episodes,
     train_dynamics,
@@ -153,7 +154,11 @@ def test_saved_dynamics_reload_into_the_same_rollout(base_checkpoint, tmp_path) 
     path = tmp_path / "member.pt"
     save_dynamics(path, model, {"member": 3, "seed": 1})
     saved = torch.load(path, map_location="cpu", weights_only=True)
-    assert saved["metadata"] == {"member": 3, "seed": 1}
+    assert saved["metadata"] == protocol_metadata() | {"member": 3, "seed": 1}
+    assert saved["metadata"]["normalization"] == {
+        "running_stats": "frozen",
+        "affine_parameters": "trainable",
+    }
     assert not any(name.startswith(("encoder.", "projector.")) for name in saved["dynamics"])
 
     reloaded = load_dynamics(base_checkpoint, path, device="cpu")
@@ -164,8 +169,15 @@ def test_saved_dynamics_reload_into_the_same_rollout(base_checkpoint, tmp_path) 
     released = ReferenceLeWM.from_checkpoint(base_checkpoint, device="cpu")
     assert not torch.equal(reloaded.rollout(latent, blocks), released.rollout(latent, blocks))
 
-    torch.save({"dynamics": {"predictor.nonsense": torch.zeros(1)}}, path)
-    with pytest.raises(ValueError):
+    torch.save({"dynamics": model.dynamics_state_dict(), "metadata": {"member": 3}}, path)
+    with pytest.raises(ValueError, match="protocol"):  # no protocol tag: an older run
+        load_dynamics(base_checkpoint, path, device="cpu")
+
+    save_dynamics(path, model, {})
+    torch.save(
+        {"dynamics": {"predictor.nonsense": torch.zeros(1)}, "metadata": protocol_metadata()}, path
+    )
+    with pytest.raises(ValueError, match="dynamics"):
         load_dynamics(base_checkpoint, path, device="cpu")
 
 

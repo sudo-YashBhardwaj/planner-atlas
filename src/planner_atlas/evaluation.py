@@ -11,7 +11,7 @@ planner_atlas.pusht. TwoRoom's task cost is the final agent-goal distance / 224,
 is that distance below 16 pixels, where the environment terminates.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -176,14 +176,27 @@ def evaluate_candidates(
     execute(blocks) runs one plan from the start of the case being studied and returns its
     block-end frames and task outcome.
     """
-    predicted = model.rollout(latent, plans[None])[0]  # [S, H + 1, D], z_0 first
     frames, outcomes = zip(*(execute(plan) for plan in plans), strict=True)
-    real = model.encode(frames_to_tensor(np.stack(frames), latent.device))  # [S, H, D]
+    realized = model.encode(frames_to_tensor(np.stack(frames), latent.device))  # [S, H, D]
+    return compare_with_model(model, latent, goal, plans, realized, outcomes)
+
+
+def compare_with_model(
+    model: ReferenceLeWM,
+    latent: torch.Tensor,
+    goal: torch.Tensor,
+    plans: torch.Tensor,
+    realized: torch.Tensor,
+    outcomes: Sequence[TaskOutcome],
+) -> CandidateEvaluation:
+    """What the model predicted for plans [S, H, 10] against the latents [S, H, 192] their real
+    executions produced, so an execution paid for once can be scored by several models."""
+    predicted = model.rollout(latent, plans[None])[0]  # [S, H + 1, D], z_0 first
     return CandidateEvaluation(
         predicted_cost=terminal_cost(predicted[None, :, -1], goal)[0].cpu().numpy(),
-        realized_cost=terminal_cost(real[None, :, -1], goal)[0].cpu().numpy(),
-        rollout_error=(predicted[:, 1:] - real).square().mean(dim=(1, 2)).cpu().numpy(),
-        terminal_error=(predicted[:, -1] - real[:, -1]).square().mean(dim=1).cpu().numpy(),
+        realized_cost=terminal_cost(realized[None, :, -1], goal)[0].cpu().numpy(),
+        rollout_error=(predicted[:, 1:] - realized).square().mean(dim=(1, 2)).cpu().numpy(),
+        terminal_error=(predicted[:, -1] - realized[:, -1]).square().mean(dim=1).cpu().numpy(),
         task={key: np.array([outcome[key] for outcome in outcomes]) for key in outcomes[0]},
     )
 

@@ -86,7 +86,7 @@ def random_shooting(
     """Lowest-cost plan among num_samples independent samples of the initial proposal."""
     if horizon < 1 or num_samples < 1:
         raise ValueError("expected positive horizon and num_samples")
-    initial = _initial_proposal(horizon)
+    initial = initial_proposal(horizon)
     plans = sample_proposal(initial, num_samples=num_samples, bounds=bounds, generator=generator)
     costs = _score(model, latent, goal, plans, score_batch_size)
     best = costs.argmin()
@@ -119,7 +119,7 @@ def cem(
             "expected positive horizon, num_samples, iterations; elite_fraction in (0, 1]"
         )
     num_elites = max(1, int(num_samples * elite_fraction))
-    initial = proposal = _initial_proposal(horizon)
+    initial = proposal = initial_proposal(horizon)
     history, best_plans = [], []
     for _ in range(iterations):
         plans = sample_proposal(
@@ -160,7 +160,8 @@ def sample_proposal(
     return (mean + std * noise).clamp(low, high)
 
 
-def _initial_proposal(horizon: int) -> Proposal:
+def initial_proposal(horizon: int) -> Proposal:
+    """The proposal both planners start from, and the distribution random acquisition draws."""
     return Proposal(torch.zeros(horizon, ACTION_DIM), torch.ones(horizon, ACTION_DIM))
 
 

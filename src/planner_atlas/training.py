@@ -49,6 +49,7 @@ GRADIENT_CLIP = 1.0  # upstream trainer.gradient_clip_val
 FROZEN = ("encoder", "projector")  # the representation, kept exactly as released
 TRAINABLE = ("action_encoder", "predictor", "pred_proj")  # the latent dynamics
 FRAME_CONVENTION = "uint8/255, imagenet normalized, vit cls token, projector"
+DYNAMICS_PROTOCOL = "frozen_rep_v2"  # frozen representation, held normalization statistics
 
 
 @dataclass(frozen=True)
@@ -146,6 +147,18 @@ class TrainableDynamics(nn.Module):
         return {name: state[name] for name in sorted(dynamics_keys(self.model))}
 
 
+def protocol_metadata() -> dict:
+    """What every saved member states about how it was trained.
+
+    Members trained under different protocols are not comparable, so this travels with each
+    checkpoint and load_dynamics refuses anything else.
+    """
+    return {
+        "dynamics_protocol": DYNAMICS_PROTOCOL,
+        "normalization": {"running_stats": "frozen", "affine_parameters": "trainable"},
+    }
+
+
 def dynamics_keys(model: ReferenceLeWM) -> set[str]:
     """State dict entries of the latent dynamics, the half that trains."""
     prefixes = tuple(f"{module}." for module in TRAINABLE)
@@ -158,6 +171,30 @@ def predictor_loss(
     """The frozen-representation objective of the module docstring, on one batch of windows."""
     predicted = model.predict(latents[:, :HISTORY], action_blocks[:, :HISTORY])
     return (predicted - latents[:, 1:]).square().mean()
+
+
+def dynamics_optimizer(
+    model: TrainableDynamics, *, learning_rate: float, weight_decay: float
+) -> torch.optim.Optimizer:
+    """The optimizer every run uses, so repair branches cannot drift apart on this."""
+    return torch.optim.AdamW(
+        model.trainable_parameters(), lr=learning_rate, weight_decay=weight_decay
+    )
+
+
+def optimizer_step(
+    model: TrainableDynamics,
+    optimizer: torch.optim.Optimizer,
+    latents: torch.Tensor,
+    action_blocks: torch.Tensor,
+) -> float:
+    """One step on the prediction loss, clipped as upstream clips; returns the loss."""
+    loss = predictor_loss(model, latents, action_blocks)
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    nn.utils.clip_grad_norm_(model.trainable_parameters(), GRADIENT_CLIP)
+    optimizer.step()
+    return loss.item()
 
 
 def build_latent_cache(
@@ -284,9 +321,7 @@ def train_dynamics(
 ) -> list[dict[str, float]]:
     """AdamW on the trainable dynamics over the given windows; one record per epoch."""
     device = next(model.parameters()).device
-    optimizer = torch.optim.AdamW(
-        model.trainable_parameters(), lr=learning_rate, weight_decay=weight_decay
-    )
+    optimizer = dynamics_optimizer(model, learning_rate=learning_rate, weight_decay=weight_decay)
     generator = np.random.default_rng(seed)
     history = []
     for epoch in range(epochs):
@@ -297,12 +332,7 @@ def train_dynamics(
             latents, blocks = windows.batch(
                 indices[order[start : start + batch_size]], device=device
             )
-            loss = predictor_loss(model, latents, blocks)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.trainable_parameters(), GRADIENT_CLIP)
-            optimizer.step()
-            losses.append(loss.item())
+            losses.append(optimizer_step(model, optimizer, latents, blocks))
         record = {"epoch": epoch, "train_loss": float(np.mean(losses)), "steps": len(losses)}
         if validation is not None:
             record["validation_loss"] = validation_loss(model, validation, batch_size=batch_size)
@@ -327,7 +357,8 @@ def validation_loss(model: TrainableDynamics, windows: LatentWindows, *, batch_s
 
 def save_dynamics(path: Path, model: TrainableDynamics, metadata: dict) -> None:
     """The trained dynamics and what reproduces them; the frozen half is the base checkpoint."""
-    torch.save({"dynamics": model.dynamics_state_dict(), "metadata": metadata}, path)
+    saved = {"dynamics": model.dynamics_state_dict(), "metadata": protocol_metadata() | metadata}
+    torch.save(saved, path)
 
 
 def load_dynamics(
@@ -335,7 +366,14 @@ def load_dynamics(
 ) -> ReferenceLeWM:
     """The released model with trained dynamics loaded over it: planners take it unchanged."""
     model = ReferenceLeWM.from_checkpoint(base_checkpoint, device=device)
-    trained = torch.load(dynamics, map_location=device, weights_only=True)["dynamics"]
+    saved = torch.load(dynamics, map_location=device, weights_only=True)
+    protocol = saved.get("metadata", {}).get("dynamics_protocol")
+    if protocol != DYNAMICS_PROTOCOL:
+        raise ValueError(
+            f"{dynamics} was trained under protocol {protocol!r}, not {DYNAMICS_PROTOCOL!r}: "
+            "dynamics from different protocols are not comparable"
+        )
+    trained = saved["dynamics"]
     expected = dynamics_keys(model)
     if set(trained) != expected:
         raise ValueError(
