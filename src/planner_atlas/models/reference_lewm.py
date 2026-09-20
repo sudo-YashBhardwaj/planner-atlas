@@ -71,6 +71,16 @@ class ReferenceLeWM(nn.Module):
         cls_tokens = self.encoder(pixels).last_hidden_state[:, 0]
         return self.projector(cls_tokens).unflatten(0, observations.shape[:2])
 
+    def predict(self, latents: torch.Tensor, action_embeddings: torch.Tensor) -> torch.Tensor:
+        """Next latents [B, T, 192] predicted at every position of a causal window.
+
+        Position t predicts the latent reached by applying its action block, attending to the
+        positions up to t. The rollout iterates this one step at a time; training supervises all
+        positions of a window at once, which is the step the released model learned.
+        """
+        predicted = self.predictor(latents, action_embeddings)
+        return self.pred_proj(predicted.flatten(0, 1)).unflatten(0, predicted.shape[:2])
+
     @torch.no_grad()
     def rollout(self, latent: torch.Tensor, action_blocks: torch.Tensor) -> torch.Tensor:
         """Latents [z_0, z_1, ..., z_T] shaped [B, S, T + 1, 192], where z_0 = latent [B, 192].
@@ -93,10 +103,8 @@ class ReferenceLeWM(nn.Module):
         for step in range(t):
             start = max(0, step + 1 - CONTEXT_FRAMES)
             window = torch.stack(latents[start:], dim=1)
-            predicted = self.predictor(window, actions[:, start : step + 1])
-            # Like the reference, project the whole window, then keep the newest latent.
-            projected = self.pred_proj(predicted.flatten(0, 1)).unflatten(0, predicted.shape[:2])
-            latents.append(projected[:, -1])
+            # Like the reference, predict the whole window, then keep the newest latent.
+            latents.append(self.predict(window, actions[:, start : step + 1])[:, -1])
         return torch.stack(latents, dim=1).unflatten(0, (b, s))
 
     @torch.no_grad()
