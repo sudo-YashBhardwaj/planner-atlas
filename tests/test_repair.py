@@ -14,6 +14,7 @@ from planner_atlas.repair import (
     repair_windows,
 )
 from planner_atlas.training import (
+    HISTORY,
     NUM_STEPS,
     WINDOW_ROWS,
     LatentWindows,
@@ -46,24 +47,40 @@ def base(rows: int = 96, value: float = 0.0) -> LatentWindows:
     )
 
 
-def test_acquired_trajectories_yield_only_executed_windows() -> None:
+def test_acquired_trajectories_yield_every_valid_window() -> None:
     windows = acquired(trajectories=3)
-    assert len(windows) == 3 * (HORIZON - NUM_STEPS + 1)  # 2 windows per 5 block trajectory
+    # a 5-block trajectory has 6 latents, so windows may start at blocks 0, 1 and 2
+    assert len(windows) == 3 * (HORIZON - HISTORY + 1) == 9
+    assert [tuple(row) for row in windows.index[:3]] == [(0, 0), (0, 1), (0, 2)]
     latents, blocks = windows.batch(np.arange(len(windows)), device="cpu")
     assert latents.shape == (len(windows), NUM_STEPS, LATENT_DIM)
-    assert blocks.shape == (len(windows), NUM_STEPS, ACTION_DIM)
+    assert blocks.shape == (len(windows), HISTORY, ACTION_DIM)
 
-    # every window is four consecutive observations of one trajectory with the blocks between them
-    steps = np.arange(NUM_STEPS)
     for row, (trajectory, first) in enumerate(windows.index):
         np.testing.assert_array_equal(
-            latents[row].numpy(), windows.latents[trajectory, first + steps]
+            latents[row].numpy(), windows.latents[trajectory, first + np.arange(NUM_STEPS)]
         )
         np.testing.assert_array_equal(
-            blocks[row].numpy(), windows.blocks[trajectory, first + steps]
+            blocks[row].numpy(), windows.blocks[trajectory, first + np.arange(HISTORY)]
         )
     with pytest.raises(ValueError):
         repair_windows(np.zeros((1, 3, LATENT_DIM)), np.zeros((1, 2, ACTION_DIM)))
+
+
+def test_repair_refuses_to_train_without_a_seed() -> None:
+    with pytest.raises(ValueError, match="seed"):
+        repair_dynamics(
+            TrainableDynamics(ReferenceLeWM()),
+            base(),
+            None,
+            steps=1,
+            batch_size=4,
+            repair_fraction=0.0,
+            learning_rate=1e-3,
+            weight_decay=0.0,
+            seed=None,
+            log=lambda record: None,
+        )
 
 
 def test_mixture_holds_the_configured_ratio() -> None:
@@ -85,7 +102,7 @@ def test_mixture_holds_the_configured_ratio() -> None:
     assert latents.shape == (32, NUM_STEPS, LATENT_DIM)
     from_repair = latents.reshape(32, -1).mean(dim=1) == 1.0
     assert int(from_repair.sum()) == 8 and int((~from_repair).sum()) == 24
-    assert blocks.shape == (32, NUM_STEPS, ACTION_DIM)
+    assert blocks.shape == (32, HISTORY, ACTION_DIM)
 
 
 def test_repair_branches_start_from_the_same_base(base_checkpoint) -> None:

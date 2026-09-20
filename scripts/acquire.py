@@ -1,29 +1,39 @@
-"""Collect a PushT repair dataset with one acquisition strategy, under a transition budget.
+"""Collect a PushT repair stream with one acquisition strategy, under a transition budget.
 
-    uv run python scripts/acquire.py --strategy planner --budget 500 \
-        --dataset pusht_expert_train.h5 --checkpoint weights.pt --output planner.h5
+    uv run python scripts/acquire.py --strategy planner --budget 40000 \
+        --dataset pusht_expert_train.h5 --checkpoint weights.pt --output planner-seed0.h5
 
-Every strategy pays the same budget, counted in true simulator transitions: one plan of 5 blocks
-costs 25 of them, and one plan is executed per case start. The case pool is drawn once and split
-so that the evaluation starts of the repair experiment are never acquired from; pass the same
---case-seed and --holdout-cases there.
+Contexts come from one deterministic ordered stream over training-split episodes, shared by every
+strategy at the same --stream-seed, so for a given plan index all strategies face the same start,
+goal and history and only the chosen continuation differs. Evaluation episodes are the validation
+side of the same episode split and are never acquired from.
 
-Writes the training tensors to --output and one metadata record per acquisition beside it.
+Budgets are nested: a seed's stream always walks the same fixed pool of 1600 contexts in the same
+permuted order, so the first n contexts are the same whatever budget is asked for and a 40000
+stream contains the 10000 and 2500 budgets as exact prefixes. One plan of 5 blocks costs 25 true transitions;
+replaying a recorded episode to reconstruct a start is diagnostic and is not counted.
+
+Random and uncertainty seed their proposal generator per context from the same number, so their
+candidate innovations are paired; CEM is left alone.
 """
 
 import argparse
+import subprocess
 from functools import partial
 from pathlib import Path
 
+import h5py
 import torch
 
 from planner_atlas.acquisition import (
     STRATEGIES,
+    STREAM_PLANS,
     acquire,
     planner_selector,
     plans_for_budget,
     random_selector,
     save_acquisitions,
+    stream_order,
     uncertainty_selector,
 )
 from planner_atlas.atlas import HORIZON, PRESSURES, make_planner, planner_settings
@@ -33,8 +43,16 @@ from planner_atlas.evaluation import encode_frame
 from planner_atlas.models.reference_lewm import ReferenceLeWM
 from planner_atlas.planning import model_action_bounds
 from planner_atlas.pusht import reconstruct_pusht_start, rollout_pusht, sample_pusht_cases
-from planner_atlas.training import file_digest
+from planner_atlas.training import (
+    DYNAMICS_PROTOCOL,
+    cache_identity,
+    file_digest,
+    split_episodes,
+)
 from planner_atlas.uncertainty import load_ensemble
+
+VALIDATION_FRACTION = 0.1  # the episode split repair training uses
+SPLIT_SEED = 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,16 +61,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--budget", type=int, required=True, help="true simulator transitions")
     parser.add_argument("--dataset", type=Path, required=True, help="pusht_expert_train.h5")
     parser.add_argument("--checkpoint", type=Path, required=True, help="base LeWM weights.pt")
-    parser.add_argument("--output", type=Path, required=True, help="repair dataset (.h5)")
+    parser.add_argument("--output", type=Path, required=True, help="repair stream (.h5)")
     parser.add_argument("--members", type=Path, nargs="*", default=(), help="ensemble dynamics")
-    parser.add_argument("--case-seed", type=int, default=11, help="the shared case pool")
-    parser.add_argument("--holdout-cases", type=int, default=24, help="reserved for evaluation")
+    parser.add_argument("--stream-seed", type=int, default=0, help="acquisition seed")
     parser.add_argument("--candidates", type=int, default=128, help="uncertainty candidate set")
     parser.add_argument("--pressure", default="P2", choices=list(PRESSURES), help="planner budget")
-    parser.add_argument("--seed", type=int, default=0, help="proposal and planner seed")
     parser.add_argument("--round", type=int, default=0, help="acquisition round")
     parser.add_argument("--device", default="cuda")
     return parser.parse_args()
+
+
+def git_commit() -> str:
+    """The working tree's commit, recorded so a run can be traced back to its code."""
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=False
+    )
+    return result.stdout.strip() or "unknown"
 
 
 def main() -> None:
@@ -63,30 +87,51 @@ def main() -> None:
     model = ReferenceLeWM.from_checkpoint(args.checkpoint, device=args.device)
     env = make_env("pusht")
 
-    pool = sample_pusht_cases(
-        args.dataset, num_cases=args.holdout_cases + plans, seed=args.case_seed
+    with h5py.File(args.dataset, "r") as file:
+        num_episodes = len(file["ep_len"])
+    validation = split_episodes(
+        num_episodes, validation_fraction=VALIDATION_FRACTION, seed=SPLIT_SEED
     )
-    cases = pool[args.holdout_cases :]
-    print(f"{args.strategy}: {plans} plans x {HORIZON * 5} transitions = {args.budget}")
+    if plans > STREAM_PLANS:
+        raise ValueError(f"a stream holds {STREAM_PLANS} contexts, {plans} were asked for")
+    pool = sample_pusht_cases(
+        args.dataset, num_cases=STREAM_PLANS, seed=args.stream_seed, episodes=~validation
+    )
+    order = stream_order(len(pool), seed=args.stream_seed)
+    contexts = [pool[i] for i in order[:plans]]  # budgets are prefixes of this fixed order
+    print(
+        f"{args.strategy} seed {args.stream_seed}: {plans} plans x {HORIZON * 5} transitions "
+        f"= {args.budget}, from {(~validation).sum()} training-split episodes"
+    )
 
-    generator = torch.Generator(bounds[0].device).manual_seed(args.seed)
-    if args.strategy == "random":
-        select = random_selector(horizon=HORIZON, bounds=bounds, generator=generator)
-    elif args.strategy == "uncertainty":
-        ensemble = load_ensemble(args.checkpoint, args.members, device=args.device)
-        select = uncertainty_selector(
-            horizon=HORIZON,
-            bounds=bounds,
-            generator=generator,
-            ensemble=ensemble,
-            num_candidates=args.candidates,
+    ensemble = None
+    if args.strategy == "uncertainty":
+        ensemble = load_ensemble(
+            args.checkpoint,
+            args.members,
+            device=args.device,
+            expect={"cache_identity": cache_identity(args.dataset, args.checkpoint)},
         )
-    else:
-        settings = planner_settings(*PRESSURES[args.pressure])["cem"]
-        select = planner_selector(make_planner("cem", model, bounds, *settings, args.seed))
+    settings = planner_settings(*PRESSURES[args.pressure])["cem"]
 
     acquisitions = []
-    for index, case in enumerate(cases):
+    for index, case in enumerate(contexts):
+        # random and uncertainty draw their proposal from the same per-context seed
+        seed = args.stream_seed * 1_000_000 + index
+        generator = torch.Generator(bounds[0].device).manual_seed(seed)
+        if args.strategy == "random":
+            select = random_selector(horizon=HORIZON, bounds=bounds, generator=generator)
+        elif args.strategy == "uncertainty":
+            select = uncertainty_selector(
+                horizon=HORIZON,
+                bounds=bounds,
+                generator=generator,
+                ensemble=ensemble,
+                num_candidates=args.candidates,
+            )
+        else:
+            select = planner_selector(make_planner("cem", model, bounds, *settings, seed))
+
         reconstruct_pusht_start(env, case)
         latent = encode_frame(model, env.render(), args.device)
         goal = encode_frame(model, case.goal_frame, args.device)
@@ -103,23 +148,31 @@ def main() -> None:
                 start_step=case.start_step,
             )
         )
-        if (index + 1) % 10 == 0:
-            print(f"   {index + 1}/{len(cases)} plans executed", flush=True)
+        if (index + 1) % 100 == 0:
+            print(f"   {index + 1}/{len(contexts)} plans executed", flush=True)
 
     run = {
         "acquisition_round": args.round,
         "environment": "pusht",
+        "git_commit": git_commit(),
+        "dynamics_protocol": DYNAMICS_PROTOCOL,
         "base_checkpoint": file_digest(args.checkpoint),
-        "case_seed": args.case_seed,
-        "holdout_cases": args.holdout_cases,
-        "seed": args.seed,
+        "dataset": cache_identity(args.dataset, args.checkpoint),
+        "stream_seed": args.stream_seed,
+        "split_seed": SPLIT_SEED,
+        "validation_fraction": VALIDATION_FRACTION,
         "pressure": args.pressure if args.strategy == "planner" else None,
         "candidates": args.candidates if args.strategy == "uncertainty" else None,
+        "members": [file_digest(path) for path in args.members],
     }
     save_acquisitions(args.output, acquisitions, run)
     transitions = sum(one.transitions for one in acquisitions)
-    assert transitions == args.budget, f"spent {transitions}, budget {args.budget}"
-    print(f"saved {args.output}: {len(acquisitions)} trajectories, {transitions} transitions")
+    if transitions != args.budget:
+        raise AssertionError(f"spent {transitions} transitions, budget was {args.budget}")
+    print(
+        f"saved {args.output}: {len(acquisitions)} trajectories, {transitions} transitions, "
+        f"digest {file_digest(args.output)[:12]}"
+    )
 
 
 if __name__ == "__main__":

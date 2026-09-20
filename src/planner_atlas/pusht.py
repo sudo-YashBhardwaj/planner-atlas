@@ -20,7 +20,7 @@ official success additionally requires the agent to be at its goal position; bot
 the semantic cost d_p / 512 + d_theta / pi is the continuous task error the Atlas ranks against.
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -117,10 +117,19 @@ def pusht_outcome(poses: np.ndarray, goal_pose: np.ndarray, *, reached: bool) ->
 
 
 def sample_pusht_cases(
-    path: Path, *, num_cases: int, seed: int, goal_offset: int = GOAL_OFFSET
+    path: Path,
+    *,
+    num_cases: int,
+    seed: int,
+    goal_offset: int = GOAL_OFFSET,
+    episodes: np.ndarray | None = None,
 ) -> list[PushTCase]:
     """Distinct start rows drawn uniformly among those whose goal lies in the same episode and
-    whose block is not already at the goal pose (the semantic task is not already solved)."""
+    whose block is not already at the goal pose (the semantic task is not already solved).
+
+    With episodes, a boolean mask over episodes, only those episodes are drawn from: repair data
+    and evaluation cases are kept on opposite sides of the dataset's episode split that way.
+    """
     with h5py.File(path, "r") as file:
         lengths, offsets, states = file["ep_len"][:], file["ep_offset"][:], file["state"][:]
         starts = np.concatenate(
@@ -133,8 +142,10 @@ def sample_pusht_cases(
             states[starts][:, BLOCK_POSE], states[starts + goal_offset][:, BLOCK_POSE]
         )
         starts = starts[~semantic_success(*errors)]
+        if episodes is not None:
+            starts = starts[episodes[np.searchsorted(offsets, starts, side="right") - 1]]
         rows = np.sort(np.random.default_rng(seed).choice(starts, size=num_cases, replace=False))
-        episodes = np.searchsorted(offsets, rows, side="right") - 1
+        drawn = np.searchsorted(offsets, rows, side="right") - 1
         actions, pixels = file["action"], file["pixels"]
         return [
             PushTCase(
@@ -149,8 +160,28 @@ def sample_pusht_cases(
                 start_frame=pixels[row],
                 goal_frame=pixels[row + goal_offset],
             )
-            for episode, row in zip(episodes, rows, strict=True)
+            for episode, row in zip(drawn, rows, strict=True)
         ]
+
+
+def replay_frames(env: gym.Env, dataset: Path) -> Iterator[np.ndarray]:
+    """Every frame of the dataset in row order, as the live renderer produces it.
+
+    Each episode is restored at its recorded start and replayed with its recorded actions, which
+    is exactly the pipeline acquisition, planning and evaluation see; the dataset's own recorded
+    pixels are never read. Setting each state directly would be cheaper but leaves a residual
+    0.18 latent L2 gap against this path, where rendering the same state twice gives 0.
+    """
+    with h5py.File(dataset, "r") as file:
+        lengths, offsets = file["ep_len"][:], file["ep_offset"][:]
+        states, actions = file["state"][:], file["action"][:]
+    for length, offset in zip(lengths, offsets, strict=True):
+        env.reset(seed=0)
+        set_state_and_goal(env, states[offset], states[offset + length - 1])
+        yield env.render()
+        for action in actions[offset : offset + length - 1]:
+            env.step(action)
+            yield env.render()
 
 
 def reconstruct_pusht_start(env: gym.Env, case: PushTCase) -> gym.Env:

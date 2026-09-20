@@ -16,7 +16,9 @@ from typing import Protocol
 
 import torch
 
-from planner_atlas.training import load_dynamics
+from planner_atlas.training import load_dynamics, load_metadata
+
+PROVENANCE = ("split_seed", "validation_fraction", "cache_identity", "base_checkpoint")
 
 
 class LatentModel(Protocol):
@@ -57,15 +59,39 @@ class DynamicsEnsemble:
         return cost_uncertainty(self.cost(latent, goal, action_blocks))
 
 
+def check_provenance(metadata: Sequence[dict], fields: Sequence[str]) -> None:
+    """Refuse a set of artifacts that disagree on how they were made."""
+    if not metadata:
+        raise ValueError("nothing to check")
+    for field in fields:
+        values = [str(one.get(field)) for one in metadata]
+        if len(set(values)) > 1:
+            raise ValueError(f"artifacts disagree on {field}: {sorted(set(values))[:2]}")
+
+
 def cost_uncertainty(costs: torch.Tensor) -> torch.Tensor:
     """Population variance across ensemble members of terminal costs [E, B, S] -> [B, S]."""
     return costs.var(dim=0, unbiased=False)
 
 
 def load_ensemble(
-    base_checkpoint: Path, dynamics: Sequence[Path], *, device: torch.device | str
+    base_checkpoint: Path,
+    dynamics: Sequence[Path],
+    *,
+    device: torch.device | str,
+    expect: dict | None = None,
 ) -> DynamicsEnsemble:
-    """Load trained members over one base checkpoint, sharing its frozen representation."""
+    """Load trained members over one base checkpoint, sharing its frozen representation.
+
+    Members must agree on the episode split, the dataset and representation they were built from
+    and the base checkpoint: a member trained on another split would leak evaluation episodes into
+    whatever the ensemble is used to select.
+    """
+    metadata = [load_metadata(path) for path in dynamics]
+    check_provenance(metadata, PROVENANCE)
+    for field, value in (expect or {}).items():
+        if metadata[0].get(field) != value:
+            raise ValueError(f"the ensemble was built with a different {field}")
     members = [load_dynamics(base_checkpoint, path, device=device) for path in dynamics]
     for member in members[1:]:
         member.encoder, member.projector = members[0].encoder, members[0].projector

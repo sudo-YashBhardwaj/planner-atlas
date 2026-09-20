@@ -2,7 +2,7 @@ import pytest
 import torch
 
 from planner_atlas.models.reference_lewm import LATENT_DIM
-from planner_atlas.uncertainty import DynamicsEnsemble, cost_uncertainty
+from planner_atlas.uncertainty import DynamicsEnsemble, check_provenance, cost_uncertainty
 
 
 class FakeMember:
@@ -50,6 +50,18 @@ def test_uncertainty_is_the_population_variance_of_member_costs() -> None:
     uncertainty = ensemble.uncertainty(latent, goal, torch.zeros(1, 3, 2, 10))
     # members differ by a constant 4, so every candidate carries variance 4
     torch.testing.assert_close(uncertainty, torch.full((1, 3), 4.0))
+
+
+def test_members_must_agree_on_their_provenance() -> None:
+    """A member trained on another episode split would leak evaluation episodes into selection."""
+    shared = {"split_seed": 0, "validation_fraction": 0.1, "cache_identity": {"a": 1}}
+    check_provenance([shared, dict(shared)], tuple(shared))  # agreeing members pass
+    with pytest.raises(ValueError, match="split_seed"):
+        check_provenance([shared, {**shared, "split_seed": 1}], tuple(shared))
+    with pytest.raises(ValueError, match="cache_identity"):
+        check_provenance([shared, {**shared, "cache_identity": {"a": 2}}], tuple(shared))
+    with pytest.raises(ValueError):
+        check_provenance([], ("split_seed",))
 
 
 def test_an_ensemble_needs_a_member() -> None:

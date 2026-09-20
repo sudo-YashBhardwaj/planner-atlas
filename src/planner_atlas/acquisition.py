@@ -37,6 +37,8 @@ from planner_atlas.planning import PlanResult, initial_proposal, sample_proposal
 from planner_atlas.uncertainty import DynamicsEnsemble
 
 STRATEGIES = ("random", "uncertainty", "planner")
+STREAM_PLANS = 1600  # the fixed context pool a seed's stream is drawn from; budgets are prefixes
+PROVENANCE = ("environment", "base_checkpoint", "dataset", "dynamics_protocol")
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,16 @@ def planner_selector(plan: Callable[[torch.Tensor, torch.Tensor], PlanResult]) -
     return select
 
 
+def stream_order(count: int, *, seed: int) -> np.ndarray:
+    """The order a seed's acquisition stream visits its context pool.
+
+    A permutation of the whole pool, so the first n of it are the same contexts whatever budget a
+    run asks for: budget prefixes are nested by construction rather than by how rows happen to be
+    sorted for storage.
+    """
+    return np.random.default_rng([seed, 0xACC]).permutation(count)
+
+
 def plans_for_budget(budget: int, *, horizon: int) -> int:
     """How many plans a budget of true transitions buys; the budget must divide exactly, so that
     every strategy spends the same number of transitions and none is truncated mid-plan."""
@@ -204,17 +216,39 @@ def save_acquisitions(path: Path, acquisitions: Sequence[Acquisition], run: dict
     """
     if not acquisitions:
         raise ValueError("nothing to save")
+    horizon = acquisitions[0].blocks.shape[0]
     with h5py.File(path, "w") as file:
         file["latents"] = np.stack([one.latents for one in acquisitions])
         file["blocks"] = np.stack([one.blocks for one in acquisitions])
         file.attrs["transitions"] = sum(one.transitions for one in acquisitions)
         file.attrs["trajectories"] = len(acquisitions)
+        file.attrs["horizon"] = horizon
+        file.attrs["transitions_per_plan"] = horizon * BLOCK_STEPS
+        file.attrs["strategy"] = acquisitions[0].strategy
+        for field in PROVENANCE:
+            file.attrs[field] = json.dumps(run.get(field))
     with path.with_suffix(".jsonl").open("w") as out:
         for one in acquisitions:
             out.write(json.dumps({**run, **one.record}) + "\n")
 
 
-def load_acquisitions(path: Path) -> tuple[np.ndarray, np.ndarray, int]:
-    """Latents [K, H + 1, 192], action blocks [K, H, 10], and the transitions they cost."""
+def load_acquisitions(
+    path: Path, *, horizon: int | None = None, expect: dict | None = None
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Latents [K, H + 1, 192], action blocks [K, H, 10], and the transitions they cost.
+
+    A stream is refused unless its horizon and provenance match what the caller expects: a
+    horizon mismatch would silently make budget // transitions_per_plan the wrong count.
+    """
     with h5py.File(path, "r") as file:
+        if "horizon" not in file.attrs:
+            raise ValueError(f"{path} predates the acquisition provenance protocol; recollect it")
+        stored = int(file.attrs["horizon"])
+        if horizon is not None and stored != horizon:
+            raise ValueError(f"{path} holds {stored}-block plans, this run uses {horizon}")
+        for field, value in (expect or {}).items():
+            if json.loads(file.attrs[field]) != value:
+                raise ValueError(f"{path} was collected with a different {field}")
+        if int(file.attrs["transitions_per_plan"]) != stored * BLOCK_STEPS:
+            raise ValueError(f"{path} disagrees with itself about transition accounting")
         return file["latents"][:], file["blocks"][:], int(file.attrs["transitions"])

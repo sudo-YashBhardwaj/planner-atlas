@@ -10,6 +10,7 @@ from planner_atlas.acquisition import (
     plans_for_budget,
     random_selector,
     save_acquisitions,
+    stream_order,
     uncertainty_selector,
 )
 from planner_atlas.models.reference_lewm import ACTION_DIM, LATENT_DIM
@@ -208,6 +209,31 @@ def test_acquisition_records_the_trajectory_and_its_hindsight(tmp_path) -> None:
     np.testing.assert_array_equal(blocks[0], one.blocks)
     records = [line for line in path.with_suffix(".jsonl").read_text().splitlines()]
     assert len(records) == 3 and '"acquisition_round": 0' in records[0]
+
+
+def test_budget_prefixes_are_nested_by_construction() -> None:
+    """The first n contexts of a seed's stream are the same whatever budget is collected."""
+    order = stream_order(1600, seed=4)
+    assert sorted(order.tolist()) == list(range(1600))  # a permutation of the whole pool
+    assert np.array_equal(order, stream_order(1600, seed=4))
+    assert not np.array_equal(order, stream_order(1600, seed=5))
+    for budget in (100, 400, 1600):
+        np.testing.assert_array_equal(order[:budget], stream_order(1600, seed=4)[:budget])
+
+
+def test_streams_refuse_a_foreign_horizon_or_provenance(tmp_path) -> None:
+    generator = torch.Generator().manual_seed(2)
+    select = random_selector(horizon=HORIZON, bounds=BOUNDS, generator=generator)
+    acquisitions = [acquire_once(select, executor()) for _ in range(2)]
+    path = tmp_path / "stream.h5"
+    save_acquisitions(path, acquisitions, {"environment": "pusht", "base_checkpoint": "abc"})
+
+    assert load_acquisitions(path, horizon=HORIZON)[2] == 2 * HORIZON * 5
+    with pytest.raises(ValueError, match="block plans"):  # would mis-count budget // 25
+        load_acquisitions(path, horizon=HORIZON + 1)
+    with pytest.raises(ValueError, match="environment"):
+        load_acquisitions(path, expect={"environment": "tworoom"})
+    load_acquisitions(path, expect={"environment": "pusht", "base_checkpoint": "abc"})
 
 
 def test_acquisition_is_deterministic() -> None:

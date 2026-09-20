@@ -18,6 +18,7 @@ import numpy as np
 import torch
 
 from planner_atlas.training import (
+    HISTORY,
     NUM_STEPS,
     LatentWindows,
     TrainableDynamics,
@@ -33,9 +34,9 @@ WindowSource = LatentWindows  # anything with len() and batch(indices, device=..
 class RepairWindows:
     """Windows over acquired trajectories, in the shape base windows come in.
 
-    A trajectory of T executed blocks yields T - 3 windows: the loss needs four observations five
-    raw actions apart together with the action blocks applied at them, and only blocks that were
-    actually executed may appear.
+    A trajectory of T executed blocks yields T - 2 windows: the loss needs four observations five
+    raw actions apart and the three action blocks between them, so a window may start at any of
+    the blocks 0 .. T - 3 and every one of them was executed.
     """
 
     latents: np.ndarray  # [K, T + 1, 192]
@@ -48,22 +49,24 @@ class RepairWindows:
     def batch(
         self, indices: np.ndarray, *, device: torch.device | str
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Latents [B, 4, 192] and normalized action blocks [B, 4, 10] of the chosen windows."""
+        """Latents [B, 4, 192] and the 3 action blocks [B, 3, 10] the loss conditions on."""
         trajectory = self.index[indices, 0][:, None]
-        first = self.index[indices, 1][:, None] + np.arange(NUM_STEPS)
+        first = self.index[indices, 1][:, None]
         return (
-            torch.from_numpy(self.latents[trajectory, first]).to(device),
-            torch.from_numpy(self.blocks[trajectory, first]).to(device),
+            torch.from_numpy(self.latents[trajectory, first + np.arange(NUM_STEPS)]).to(device),
+            torch.from_numpy(self.blocks[trajectory, first + np.arange(HISTORY)]).to(device),
         )
 
 
 def repair_windows(latents: np.ndarray, blocks: np.ndarray) -> RepairWindows:
     """Every window of every acquired trajectory, in acquisition order."""
     trajectories, horizon = blocks.shape[:2]
-    if horizon < NUM_STEPS:
-        raise ValueError(f"a trajectory of {horizon} blocks is shorter than a {NUM_STEPS} window")
+    if horizon < HISTORY or latents.shape[1] != horizon + 1:
+        raise ValueError(
+            f"a trajectory of {horizon} blocks and {latents.shape[1]} latents holds no window"
+        )
     index = np.array(
-        [(k, first) for k in range(trajectories) for first in range(horizon - NUM_STEPS + 1)]
+        [(k, first) for k in range(trajectories) for first in range(horizon - HISTORY + 1)]
     )
     return RepairWindows(latents, blocks, index)
 
@@ -78,7 +81,7 @@ def mixture_sizes(batch_size: int, repair_fraction: float) -> tuple[int, int]:
 
 def mixed_batch(
     base: WindowSource,
-    repair: WindowSource,
+    repair: WindowSource | None,
     *,
     batch_size: int,
     repair_fraction: float,
@@ -87,6 +90,8 @@ def mixed_batch(
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """One batch drawn from both sources in the configured ratio, each with replacement."""
     base_size, repair_size = mixture_sizes(batch_size, repair_fraction)
+    if repair_size and repair is None:
+        raise ValueError("a positive repair fraction needs acquired windows")
     parts = []
     if base_size:
         parts.append(base.batch(generator.integers(len(base), size=base_size), device=device))
@@ -98,19 +103,30 @@ def mixed_batch(
 def repair_dynamics(
     model: TrainableDynamics,
     base: WindowSource,
-    repair: WindowSource,
+    repair: WindowSource | None,
     *,
     steps: int,
     batch_size: int,
     repair_fraction: float,
     learning_rate: float,
     weight_decay: float,
-    seed: int,
+    seed: int | None,
     validation: WindowSource | None = None,
     log_every: int = 100,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, float]]:
-    """Fixed-step repair training on the mixture; one record per logged step."""
+    """Fixed-step repair training on the mixture; one record per logged step.
+
+    With repair_fraction 0 and no acquired windows this is the equal-compute control: the same
+    optimizer, steps and schedule, on base data only.
+
+    seed drives the mixture sampler and torch's own generator. The predictor keeps the released
+    dropout, so without seeding torch two branches given identical data and weights still diverge,
+    and "only which transitions differ" would not hold.
+    """
+    if seed is None:
+        raise ValueError("a training run needs an explicit seed")
+    torch.manual_seed(seed)
     device = next(model.parameters()).device
     optimizer = dynamics_optimizer(model, learning_rate=learning_rate, weight_decay=weight_decay)
     generator = np.random.default_rng(seed)

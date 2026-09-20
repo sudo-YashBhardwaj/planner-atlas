@@ -9,6 +9,7 @@ from planner_atlas.data import ENV_ACTION_DIM
 from planner_atlas.models.reference_lewm import LATENT_DIM, ReferenceLeWM
 from planner_atlas.training import (
     FROZEN,
+    HISTORY,
     NUM_STEPS,
     WINDOW_ROWS,
     LatentWindows,
@@ -21,6 +22,7 @@ from planner_atlas.training import (
     protocol_metadata,
     save_dynamics,
     split_episodes,
+    subsample_windows,
     train_dynamics,
     window_starts,
 )
@@ -134,6 +136,55 @@ def test_training_overfits_a_tiny_set_of_windows(base_checkpoint) -> None:
     assert history[-1]["train_loss"] < 0.5 * history[0]["train_loss"]
 
 
+def test_training_is_reproducible_despite_the_predictor_dropout(base_checkpoint) -> None:
+    """The released predictor keeps dropout, so training must seed torch, not only the sampler."""
+    windows = synthetic_windows()
+
+    def run():
+        model = TrainableDynamics.from_checkpoint(base_checkpoint, device="cpu")
+        train_dynamics(
+            model,
+            windows,
+            indices=np.arange(len(windows)),
+            batch_size=8,
+            epochs=2,
+            learning_rate=1e-3,
+            weight_decay=0.0,
+            seed=5,
+            log=lambda record: None,
+        )
+        return {name: p.clone() for name, p in model.model.predictor.named_parameters()}
+
+    first, second = run(), run()
+    assert all(torch.equal(first[name], second[name]) for name in first)
+
+    model = TrainableDynamics.from_checkpoint(base_checkpoint, device="cpu")
+    train_dynamics(
+        model,
+        windows,
+        indices=np.arange(len(windows)),
+        batch_size=8,
+        epochs=2,
+        learning_rate=1e-3,
+        weight_decay=0.0,
+        seed=6,
+        log=lambda record: None,
+    )
+    other = dict(model.model.predictor.named_parameters())
+    assert any(not torch.equal(first[name], other[name]) for name in first)
+
+
+def test_held_out_subsample_is_deterministic_and_spread(base_checkpoint) -> None:
+    windows = synthetic_windows(rows=400)
+    first = subsample_windows(windows, 50, seed=3)
+    assert len(first) == 50
+    assert np.array_equal(first.starts, subsample_windows(windows, 50, seed=3).starts)
+    assert not np.array_equal(first.starts, subsample_windows(windows, 50, seed=4).starts)
+    # a subsample, not a prefix: it reaches beyond the first 50 windows
+    assert first.starts.max() > windows.starts[50]
+    assert len(subsample_windows(windows, 0, seed=3)) == len(windows)
+
+
 def test_bootstrap_is_deterministic_and_specific_to_the_member() -> None:
     first = bootstrap_indices(500, member=0, seed=7)
     assert np.array_equal(first, bootstrap_indices(500, member=0, seed=7))
@@ -205,11 +256,11 @@ def test_batches_keep_the_upstream_window_layout() -> None:
     batch_latents, batch_blocks = windows.batch(np.array([1]), device="cpu")
 
     assert batch_latents.shape == (1, NUM_STEPS, LATENT_DIM)
-    assert batch_blocks.shape == (1, NUM_STEPS, 5 * ENV_ACTION_DIM)
+    assert batch_blocks.shape == (1, HISTORY, 5 * ENV_ACTION_DIM)  # only what the loss reads
     # observations are 5 raw steps apart, actions are the 5 raw actions in between, row major
     np.testing.assert_array_equal(batch_latents[0].numpy(), latents[[2, 7, 12, 17]])
     np.testing.assert_array_equal(batch_blocks[0, 0].numpy(), actions[2:7].reshape(-1))
-    np.testing.assert_array_equal(batch_blocks[0, 3].numpy(), actions[17:22].reshape(-1))
+    np.testing.assert_array_equal(batch_blocks[0, 2].numpy(), actions[12:17].reshape(-1))
 
 
 def test_latent_cache_refuses_a_cache_built_elsewhere(tmp_path) -> None:
@@ -229,3 +280,9 @@ def test_latent_cache_refuses_a_cache_built_elsewhere(tmp_path) -> None:
     assert len(load_latent_cache(cache, dataset, checkpoint).latents) == 6
     with pytest.raises(ValueError, match="checkpoint"):
         load_latent_cache(cache, dataset, other)
+
+    # a cache built under the previous recorded-pixel convention is refused, not silently mixed
+    with h5py.File(cache, "a") as file:
+        file.attrs["convention"] = "uint8/255, imagenet normalized, vit cls token, projector"
+    with pytest.raises(ValueError, match="convention"):
+        load_latent_cache(cache, dataset, checkpoint)

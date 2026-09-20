@@ -27,7 +27,7 @@ released running statistics for every forward pass, training included, while its
 go on training (see TrainableDynamics).
 """
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -48,7 +48,7 @@ WINDOW_ROWS = NUM_STEPS * BLOCK_STEPS  # rows one window spans inside an episode
 GRADIENT_CLIP = 1.0  # upstream trainer.gradient_clip_val
 FROZEN = ("encoder", "projector")  # the representation, kept exactly as released
 TRAINABLE = ("action_encoder", "predictor", "pred_proj")  # the latent dynamics
-FRAME_CONVENTION = "uint8/255, imagenet normalized, vit cls token, projector"
+FRAME_CONVENTION = "live render of the replayed state; uint8/255, imagenet, vit cls, projector"
 DYNAMICS_PROTOCOL = "frozen_rep_v2"  # frozen representation, held normalization statistics
 
 
@@ -75,13 +75,13 @@ class LatentWindows:
     def batch(
         self, indices: np.ndarray, *, device: torch.device | str
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Latents [B, 4, 192] and normalized action blocks [B, 4, 10] of the chosen windows."""
+        """Latents [B, 4, 192] and the 3 action blocks [B, 3, 10] the loss conditions on."""
         starts = self.starts[indices][:, None]
         latents = self.latents[starts + np.arange(NUM_STEPS) * BLOCK_STEPS]
-        actions = self.actions[starts + np.arange(WINDOW_ROWS)]
+        actions = self.actions[starts + np.arange(HISTORY * BLOCK_STEPS)]
         return (
             torch.from_numpy(latents).to(device),
-            torch.from_numpy(actions).to(device).view(len(starts), NUM_STEPS, -1),
+            torch.from_numpy(actions).to(device).view(len(starts), HISTORY, -1),
         )
 
 
@@ -168,8 +168,12 @@ def dynamics_keys(model: ReferenceLeWM) -> set[str]:
 def predictor_loss(
     model: TrainableDynamics, latents: torch.Tensor, action_blocks: torch.Tensor
 ) -> torch.Tensor:
-    """The frozen-representation objective of the module docstring, on one batch of windows."""
-    predicted = model.predict(latents[:, :HISTORY], action_blocks[:, :HISTORY])
+    """The frozen-representation objective of the module docstring, on one batch of windows.
+
+    latents are the 4 observations of a window and action_blocks the 3 blocks applied at the
+    first 3 of them, which is exactly what the objective conditions on.
+    """
+    predicted = model.predict(latents[:, :HISTORY], action_blocks)
     return (predicted - latents[:, 1:]).square().mean()
 
 
@@ -201,12 +205,19 @@ def build_latent_cache(
     dataset: Path,
     checkpoint: Path,
     cache: Path,
+    frames: Iterable[np.ndarray],
     *,
     device: torch.device | str,
     batch_size: int = 512,
     log: Callable[[str], None] = print,
 ) -> None:
     """Encode every frame of dataset once, storing latents beside the identity they came from.
+
+    frames yields the dataset's rows in order, from the environment's own renderer (see
+    pusht.replay_frames): dynamics then learn on the same latent manifold that planning,
+    acquisition and evaluation produce. Encoding the dataset's recorded pixels instead puts them
+    on a measurably different one - on 60 random PushT states the recorded frame sits 0.70 in
+    latent L2 from the live render of that same state, where rendering it twice gives 0.
 
     The file is written aside and renamed at the end, so an interrupted build leaves no cache that
     would later look complete.
@@ -215,19 +226,30 @@ def build_latent_cache(
     identity = cache_identity(dataset, checkpoint)
     partial = cache.with_name(cache.name + ".partial")
     with h5py.File(dataset, "r") as source, h5py.File(partial, "w") as target:
-        pixels = source["pixels"]
-        rows = pixels.shape[0]
+        rows = source["pixels"].shape[0]
         latents = target.create_dataset("latent", shape=(rows, LATENT_DIM), dtype="float32")
         target["ep_len"], target["ep_offset"] = source["ep_len"][:], source["ep_offset"][:]
-        for start in range(0, rows, batch_size):
-            frames = pixels[start : start + batch_size]
-            encoded = model.encode(frames_to_tensor(frames[None], device))[0]
-            latents[start : start + len(frames)] = encoded.float().cpu().numpy()
-            if start % (100 * batch_size) == 0:
-                log(f"encoded {start:,}/{rows:,} frames")
+        written, batch = 0, []
+        for frame in frames:
+            batch.append(frame)
+            if len(batch) == batch_size:
+                written = _encode_into(model, latents, batch, written, device=device, log=log)
+                batch = []
+        if batch:
+            written = _encode_into(model, latents, batch, written, device=device, log=log)
+        if written != rows:
+            raise ValueError(f"the frame source yielded {written} frames, the dataset has {rows}")
         target.attrs.update(identity)
     partial.replace(cache)
     log(f"wrote {cache} ({rows:,} latents)")
+
+
+def _encode_into(model, latents, batch, written, *, device, log) -> int:
+    encoded = model.encode(frames_to_tensor(np.stack(batch)[None], device))[0]
+    latents[written : written + len(batch)] = encoded.float().cpu().numpy()
+    if (written // len(batch)) % 100 == 0:
+        log(f"encoded {written:,}/{len(latents):,} frames")
+    return written + len(batch)
 
 
 def load_latent_cache(cache: Path, dataset: Path, checkpoint: Path) -> LatentCache:
@@ -306,6 +328,19 @@ def latent_windows(
     return LatentWindows(cache.latents, torch.nan_to_num(actions, 0.0).numpy(), starts)
 
 
+def subsample_windows(windows: LatentWindows, limit: int, *, seed: int) -> LatentWindows:
+    """A deterministic random subset of windows; a prefix would cover only the first episodes."""
+    if not limit or limit >= len(windows):
+        return windows
+    chosen = np.random.default_rng(seed).choice(len(windows), size=limit, replace=False)
+    return LatentWindows(windows.latents, windows.actions, windows.starts[np.sort(chosen)])
+
+
+def windows_episodes(windows: LatentWindows, offsets: np.ndarray) -> int:
+    """How many distinct episodes a window set covers."""
+    return len(np.unique(np.searchsorted(offsets, windows.starts, side="right") - 1))
+
+
 def train_dynamics(
     model: TrainableDynamics,
     windows: LatentWindows,
@@ -319,7 +354,12 @@ def train_dynamics(
     validation: LatentWindows | None = None,
     log: Callable[[str], None] = print,
 ) -> list[dict[str, float]]:
-    """AdamW on the trainable dynamics over the given windows; one record per epoch."""
+    """AdamW on the trainable dynamics over the given windows; one record per epoch.
+
+    seed drives both the batch order and torch's own generator: the predictor keeps the released
+    dropout, so an unseeded run is not reproducible.
+    """
+    torch.manual_seed(seed)
     device = next(model.parameters()).device
     optimizer = dynamics_optimizer(model, learning_rate=learning_rate, weight_decay=weight_decay)
     generator = np.random.default_rng(seed)

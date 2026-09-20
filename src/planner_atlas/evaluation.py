@@ -11,7 +11,7 @@ planner_atlas.pusht. TwoRoom's task cost is the final agent-goal distance / 224,
 is that distance below 16 pixels, where the environment terminates.
 """
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -162,6 +162,16 @@ def rollout_tworoom(
     set_state_and_goal(env, case.start_state, case.goal_state)
     frames, infos, reached = execute_blocks(env, blocks, stats)
     return frames, tworoom_outcome(infos[-1]["state"], case.goal_state, reached=reached)
+
+
+def tworoom_frames(env: gym.Env, dataset: Path) -> Iterator[np.ndarray]:
+    """Every frame of a TwoRoom dataset from the live renderer; its states restore exactly."""
+    with h5py.File(dataset, "r") as file:
+        proprio = file["proprio"][:]
+    env.reset(seed=0)
+    for state in proprio:
+        set_state_and_goal(env, state, state)
+        yield env.render()
 
 
 def evaluate_candidates(

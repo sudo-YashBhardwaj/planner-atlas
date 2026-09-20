@@ -18,6 +18,9 @@ import numpy as np
 import torch
 
 from planner_atlas.data import action_stats
+from planner_atlas.envs import make_env
+from planner_atlas.evaluation import tworoom_frames
+from planner_atlas.pusht import replay_frames
 from planner_atlas.training import (
     LatentWindows,
     TrainableDynamics,
@@ -36,6 +39,7 @@ from planner_atlas.training import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--env", choices=("pusht", "tworoom"), required=True)
     parser.add_argument("--dataset", type=Path, required=True, help="official tworoom/pusht h5")
     parser.add_argument("--checkpoint", type=Path, required=True, help="released LeWM weights.pt")
     parser.add_argument("--latent-cache", type=Path, required=True, help="built if missing")
@@ -66,11 +70,13 @@ def subsample(windows: LatentWindows, limit: int, *, seed: int) -> LatentWindows
 def main() -> None:
     args = parse_args()
     if not args.latent_cache.exists():
-        print(f"building latent cache {args.latent_cache}")
+        print(f"building latent cache {args.latent_cache} from live renders")
+        source = replay_frames if args.env == "pusht" else tworoom_frames
         build_latent_cache(
             args.dataset,
             args.checkpoint,
             args.latent_cache,
+            source(make_env(args.env), args.dataset),
             device=args.device,
             batch_size=args.cache_batch_size,
         )
@@ -91,7 +97,6 @@ def main() -> None:
     indices = bootstrap_indices(len(train), member=args.member, seed=args.seed)
     print(f"member {args.member}: initial validation loss {initial:.6f}")
 
-    torch.manual_seed(args.seed + args.member)  # dropout draws of this member
     history = train_dynamics(
         model,
         train,
