@@ -44,12 +44,18 @@ from planner_atlas.models.reference_lewm import LATENT_DIM, ReferenceLeWM
 
 HISTORY = 3  # observations the predictor conditions on, upstream history_size
 NUM_STEPS = HISTORY + 1  # observations per window, upstream history_size + num_preds
-WINDOW_ROWS = NUM_STEPS * BLOCK_STEPS  # rows one window spans inside an episode, upstream span
+# rows the loss reads: 4 observations 5 raw steps apart and the 15 raw actions between them.
+# Upstream loads a fourth action block after the last observation that its loss never reads, so
+# its clips span 20 rows; requiring those rows would only discard the last valid starts.
+WINDOW_ROWS = HISTORY * BLOCK_STEPS + 1
 GRADIENT_CLIP = 1.0  # upstream trainer.gradient_clip_val
 FROZEN = ("encoder", "projector")  # the representation, kept exactly as released
 TRAINABLE = ("action_encoder", "predictor", "pred_proj")  # the latent dynamics
 FRAME_CONVENTION = "live render of the replayed state; uint8/255, imagenet, vit cls, projector"
-DYNAMICS_PROTOCOL = "frozen_rep_v2"  # frozen representation, held normalization statistics
+# v3: v2 (frozen representation, held normalization statistics, trainable affine parameters,
+# seeded training) plus live-rendered goals and 16-row windows. The confirmatory results were
+# produced under v2 at commit 2d6364d; v2 checkpoints and acquisition streams are refused here.
+DYNAMICS_PROTOCOL = "frozen_rep_v3"
 
 
 @dataclass(frozen=True)
@@ -155,7 +161,10 @@ def protocol_metadata() -> dict:
     """
     return {
         "dynamics_protocol": DYNAMICS_PROTOCOL,
+        "frame_convention": FRAME_CONVENTION,
+        "window_rows": WINDOW_ROWS,
         "normalization": {"running_stats": "frozen", "affine_parameters": "trainable"},
+        "training_rng": "torch and the window sampler seeded from the run seed",
     }
 
 
@@ -287,7 +296,8 @@ def file_digest(path: Path) -> str:
 
 
 def window_starts(lengths: np.ndarray, offsets: np.ndarray) -> np.ndarray:
-    """Rows where a whole window fits inside one episode, as upstream indexes its clips."""
+    """Rows where every row a window reads lies inside one episode: an episode of L rows has
+    L - WINDOW_ROWS + 1 starts, and its last row's action, the boundary NaN, is never read."""
     starts = [
         offset + np.arange(length - WINDOW_ROWS + 1)
         for length, offset in zip(lengths, offsets, strict=True)

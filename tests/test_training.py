@@ -224,6 +224,12 @@ def test_saved_dynamics_reload_into_the_same_rollout(base_checkpoint, tmp_path) 
     with pytest.raises(ValueError, match="protocol"):  # no protocol tag: an older run
         load_dynamics(base_checkpoint, path, device="cpu")
 
+    # frozen_rep_v2 members may have been trained on recorded-pixel latents or 20-row windows
+    v2 = protocol_metadata() | {"dynamics_protocol": "frozen_rep_v2"}
+    torch.save({"dynamics": model.dynamics_state_dict(), "metadata": v2}, path)
+    with pytest.raises(ValueError, match="frozen_rep_v2"):
+        load_dynamics(base_checkpoint, path, device="cpu")
+
     save_dynamics(path, model, {})
     torch.save(
         {"dynamics": {"predictor.nonsense": torch.zeros(1)}, "metadata": protocol_metadata()}, path
@@ -246,6 +252,28 @@ def test_windows_stay_inside_episodes_and_split_by_episode() -> None:
     assert validation.sum() == 20
     assert np.array_equal(validation, split_episodes(200, validation_fraction=0.1, seed=3))
     assert not np.array_equal(validation, split_episodes(200, validation_fraction=0.1, seed=4))
+
+
+def test_window_starts_are_exactly_the_starts_whose_reads_stay_in_the_episode() -> None:
+    # 4 observations 5 raw steps apart span 16 rows, and the loss reads the 15 actions between
+    assert WINDOW_ROWS == 16
+    lengths = np.array([15, 16, 22])
+    offsets = np.array([0, 15, 31])
+    starts = window_starts(lengths, offsets)
+    assert starts.tolist() == [15, *range(31, 31 + 22 - 16 + 1)]  # 0, 1 and 7 starts
+
+    rows = int(lengths.sum())
+    latents = np.repeat(np.arange(rows, dtype=np.float32)[:, None], LATENT_DIM, axis=1)
+    actions = np.repeat(np.arange(rows, dtype=np.float32)[:, None], ENV_ACTION_DIM, axis=1)
+    windows = LatentWindows(latents, actions, starts)
+    batch_latents, batch_blocks = windows.batch(np.arange(len(starts)), device="cpu")
+    episode = np.searchsorted(offsets, starts, side="right") - 1
+    last = offsets[episode] + lengths[episode] - 1
+    # the last window of an episode reads its last observation and never its boundary action
+    assert batch_latents[:, -1, 0].numpy().max() == last.max()
+    assert np.all(batch_latents[:, :, 0].numpy().max(axis=1) <= last)
+    assert np.all(batch_blocks.numpy().max(axis=(1, 2)) <= last - 1)
+    assert np.any(batch_blocks.numpy().max(axis=(1, 2)) == last - 1)
 
 
 def test_batches_keep_the_upstream_window_layout() -> None:

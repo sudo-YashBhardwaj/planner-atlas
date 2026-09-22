@@ -5,8 +5,8 @@
 
 The TwoRoom protocol on PushT: one JSON row per case x pressure x planner, paired planners, one
 shared initial-proposal audit per case and pressure. PushT differs in how a case start is reached
-(replay from the episode start, see planner_atlas.pusht), in what the model observes at that start
-(a live render, while the goal frame is the recorded one) and in the task: the semantic block pose
+(replay from the episode start, see planner_atlas.pusht), in what the model observes (live renders
+of the replayed start and goal, never recorded frames) and in the task: the semantic block pose
 error is the task cost, and PushT's official success is reported next to it.
 """
 
@@ -38,6 +38,7 @@ from planner_atlas.pusht import (
     PushTCase,
     block_pose_errors,
     reconstruct_pusht_start,
+    render_pusht_goal,
     rollout_pusht,
     run_pusht_mpc,
     sample_pusht_cases,
@@ -100,9 +101,9 @@ def main() -> None:
     rows = []
     with args.output.open("w") as out:
         for c, case in enumerate(cases):
+            goal = encode_frame(model, render_pusht_goal(env, case), args.device)
             reconstruct_pusht_start(env, case)
             latent = encode_frame(model, env.render(), args.device)  # live, not the recorded frame
-            goal = encode_frame(model, case.goal_frame, args.device)
             diagnostics = start_diagnostics(model, env, case, latent, args.device)
             execute = partial(rollout_pusht, env, case, stats)
             evaluate = partial(evaluate_candidates, model, latent, goal, execute)

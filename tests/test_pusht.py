@@ -17,6 +17,8 @@ from planner_atlas.pusht import (
     block_pose_errors,
     pusht_outcome,
     reconstruct_pusht_start,
+    render_pusht_goal,
+    replay_frames,
     rollout_pusht,
     run_pusht_mpc,
     sample_pusht_cases,
@@ -71,10 +73,10 @@ def make_case(replay_actions: np.ndarray, goal_state: np.ndarray = GOAL_STATE) -
         goal_step=len(replay_actions) + GOAL_OFFSET,
         episode_start_state=state,
         replay_actions=replay_actions,
+        goal_actions=np.zeros((GOAL_OFFSET, 2), dtype=np.float32),
         start_state=state,
         goal_state=goal_state,
         start_frame=None,
-        goal_frame=None,
     )
 
 
@@ -161,10 +163,10 @@ def test_reconstruction_replays_the_episode_and_never_sets_a_mid_episode_state()
             goal_step=5 + GOAL_OFFSET,
             episode_start_state=episode_start,
             replay_actions=actions[:5],
+            goal_actions=actions[5:],
             start_state=recorded[4],
             goal_state=goal_state,
             start_frame=None,
-            goal_frame=None,
         )
         # the replayed actions really push and turn the block: contact, not free motion
         assert np.linalg.norm(recorded[4, 2:4] - episode_start[2:4]) > 100
@@ -184,6 +186,51 @@ def test_reconstruction_replays_the_episode_and_never_sets_a_mid_episode_state()
     np.testing.assert_array_equal(state, recorded[4])  # and it is the recorded start
     assert any(np.array_equal(each, episode_start) for each in set_states)
     assert not any(np.array_equal(each, case.start_state) for each in set_states)
+
+
+def test_goal_is_the_live_render_of_the_replayed_goal_step(tmp_path) -> None:
+    """The goal observation is the frame the latent cache holds for the goal row, bit for bit."""
+    episode_start = np.array([256.0, 255.0, 256.0, 300.0, 0.0, 0.0, 0.0])
+    length, start_step = 34, 6
+    generator = np.random.default_rng(0)
+    actions = np.zeros((length, 2), dtype=np.float32)
+    actions[:8] = [0.0, 1.0]  # push into the block, so the goal pose differs from the start
+    actions[8:] = generator.uniform(-1, 1, size=(length - 8, 2))
+    with make_env("pusht") as env:
+        env.reset(seed=0)
+        set_state_and_goal(env, episode_start, episode_start)
+        states = [episode_start]
+        for action in actions[:-1]:
+            states.append(env.step(action)[0]["state"])
+        states = np.stack(states)
+        actions[-1] = np.nan  # the boundary action of an episode, as in the official data
+        with h5py.File(tmp_path / "pusht.h5", "w") as file:
+            file["ep_len"], file["ep_offset"] = [length], [0]
+            file["state"], file["action"] = states, actions
+
+        goal_step = start_step + GOAL_OFFSET
+        case = PushTCase(
+            episode=0,
+            episode_row=0,
+            start_step=start_step,
+            goal_step=goal_step,
+            episode_start_state=episode_start,
+            replay_actions=actions[:start_step],
+            goal_actions=actions[start_step:goal_step],
+            start_state=states[start_step],
+            goal_state=states[goal_step],
+            start_frame=None,
+        )
+        env.reset(seed=3)
+        env.step(np.array([0.5, 0.5], dtype=np.float32))  # a stale episode in between
+        goal = render_pusht_goal(env, case)
+        np.testing.assert_array_equal(env_state(env), states[goal_step])  # replay is exact here
+        cached = list(replay_frames(env, tmp_path / "pusht.h5"))
+        np.testing.assert_array_equal(goal, cached[goal_step])
+        assert not np.array_equal(goal, cached[start_step])
+
+        reconstruct_pusht_start(env, case)  # and the start is still reachable afterwards
+        np.testing.assert_array_equal(env.render(), cached[start_step])
 
 
 def test_replayed_actions_are_not_part_of_the_action_budget() -> None:
@@ -216,7 +263,8 @@ def test_mpc_stops_mid_block_at_semantic_success_without_official_termination() 
     assert result.raw_steps == 7  # stopped inside the second block, not at its end
     assert len(env.actions) == 3 + 7
     assert planned_at == [3, 8]  # replanning still happens only between blocks
-    assert result.task["semantic_reached_success"] and result.task["semantic_final_success"]
+    assert result.task["semantic_reached_success"]
+    assert "semantic_final_success" not in result.task  # stopping at success makes it redundant
     # the environment never terminated: its official success also wants the agent at its goal
     assert result.task["official_reached_before_stop"] is False
 
@@ -255,10 +303,11 @@ def test_case_sampling_is_deterministic_and_skips_solved_starts(tmp_path) -> Non
         assert case.initial_task["initial_position_error"] >= SUCCESS_RADIUS
         np.testing.assert_array_equal(case.episode_start_state, states[case.episode_row])
         np.testing.assert_array_equal(case.replay_actions, actions[case.episode_row : start])
+        np.testing.assert_array_equal(case.goal_actions, actions[start : start + GOAL_OFFSET])
         np.testing.assert_array_equal(case.start_state, states[start])
         np.testing.assert_array_equal(case.goal_state, states[start + GOAL_OFFSET])
         assert case.start_frame[0, 0, 0] == start
-        assert case.goal_frame[0, 0, 0] == start + GOAL_OFFSET
+        assert not hasattr(case, "goal_frame")  # the recorded goal frame is never a model input
     with pytest.raises(ValueError):
         sample_pusht_cases(tmp_path / "pusht.h5", num_cases=7, seed=3)
 

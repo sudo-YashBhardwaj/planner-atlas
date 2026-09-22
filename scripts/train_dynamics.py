@@ -14,7 +14,6 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 import torch
 
 from planner_atlas.data import action_stats
@@ -22,7 +21,6 @@ from planner_atlas.envs import make_env
 from planner_atlas.evaluation import tworoom_frames
 from planner_atlas.pusht import replay_frames
 from planner_atlas.training import (
-    LatentWindows,
     TrainableDynamics,
     bootstrap_indices,
     build_latent_cache,
@@ -32,6 +30,7 @@ from planner_atlas.training import (
     load_latent_cache,
     save_dynamics,
     split_episodes,
+    subsample_windows,
     train_dynamics,
     validation_loss,
 )
@@ -59,14 +58,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def subsample(windows: LatentWindows, limit: int, *, seed: int) -> LatentWindows:
-    """A deterministic subset of windows, for the smaller runs of the validation ladder."""
-    if not limit or limit >= len(windows):
-        return windows
-    chosen = np.random.default_rng(seed).choice(len(windows), size=limit, replace=False)
-    return LatentWindows(windows.latents, windows.actions, windows.starts[np.sort(chosen)])
-
-
 def main() -> None:
     args = parse_args()
     if not args.latent_cache.exists():
@@ -88,8 +79,8 @@ def main() -> None:
     )
     train = latent_windows(cache, args.dataset, stats, episodes=~validation_episodes)
     validation = latent_windows(cache, args.dataset, stats, episodes=validation_episodes)
-    train = subsample(train, args.train_windows, seed=args.split_seed)
-    validation = subsample(validation, args.validation_windows, seed=args.split_seed)
+    train = subsample_windows(train, args.train_windows, seed=args.split_seed)
+    validation = subsample_windows(validation, args.validation_windows, seed=args.split_seed)
     print(f"windows: {len(train):,} train, {len(validation):,} validation")
 
     model = TrainableDynamics.from_checkpoint(args.checkpoint, device=args.device)

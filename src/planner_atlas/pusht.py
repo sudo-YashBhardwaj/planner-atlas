@@ -8,11 +8,13 @@ from the episode start. Replaying recorded actions re-creates recorded data: it 
 infrastructure rather than new environment interaction, and it is not part of any action budget,
 so MPCResult.raw_steps counts control actions only.
 
-The model's current observation is a live render of the reconstructed state while its goal is the
-recorded dataset frame at the goal step. PushT's renderer draws a goal overlay at a fixed pose that
-_set_goal_state does not move, so a goal frame cannot be rendered from a goal state; live renders
-of a state also differ slightly from the recorded frame of that state. The asymmetry is left as it
-is and measured, not repaired.
+Every observation the model is given is a live render of a replayed state, the goal included: the
+goal is reached the way the start is, by replaying the recorded actions on to the goal step, and
+rendered there (render_pusht_goal). PushT's renderer draws its goal overlay at a fixed pose that
+_set_goal_state does not move, so the goal state itself cannot be drawn; the recorded dataset frame
+of the goal step would put the goal about 0.7 latent L2 off the live-render manifold the dynamics
+are trained on. Cases therefore carry no recorded goal frame at all. Until protocol frozen_rep_v3
+the goal was that recorded frame, which is how the confirmatory results of commit 2d6364d were made.
 
 The semantic task is the T block's pose alone: position error in pixels and wrapped angle error,
 the block being directional, with PushT's own tolerances of 20 pixels and pi / 9. The environment's
@@ -52,8 +54,9 @@ BLOCK_POSE = slice(2, 5)  # block x, y and angle within a PushT state
 class PushTCase:
     """A start and the goal GOAL_OFFSET steps later in one episode of the official dataset.
 
-    The start is reproduced by replaying replay_actions from episode_start_state, so a case carries
-    the recorded actions a_0..a_{start_step - 1} next to the recorded states and frames.
+    The start is reproduced by replaying replay_actions from episode_start_state and the goal by
+    replaying goal_actions on from the start, so a case carries the recorded actions
+    a_0..a_{goal_step - 1} next to the recorded states.
     """
 
     episode: int
@@ -62,10 +65,10 @@ class PushTCase:
     goal_step: int
     episode_start_state: np.ndarray  # 7-d state at the episode start, where the scene is at rest
     replay_actions: np.ndarray  # recorded raw actions [start_step, 2] from the episode start
+    goal_actions: np.ndarray  # recorded raw actions [goal_step - start_step, 2] from the start
     start_state: np.ndarray  # recorded 7-d state at the start step
     goal_state: np.ndarray
-    start_frame: np.ndarray  # uint8 [224, 224, 3], recorded
-    goal_frame: np.ndarray
+    start_frame: np.ndarray  # uint8 [224, 224, 3], recorded: a diagnostic, never a model input
 
     @property
     def initial_task(self) -> dict[str, float]:
@@ -155,10 +158,10 @@ def sample_pusht_cases(
                 goal_step=int(row - offsets[episode] + goal_offset),
                 episode_start_state=states[offsets[episode]],
                 replay_actions=actions[offsets[episode] : row],
+                goal_actions=actions[row : row + goal_offset],
                 start_state=states[row],
                 goal_state=states[row + goal_offset],
                 start_frame=pixels[row],
-                goal_frame=pixels[row + goal_offset],
             )
             for episode, row in zip(drawn, rows, strict=True)
         ]
@@ -198,6 +201,18 @@ def reconstruct_pusht_start(env: gym.Env, case: PushTCase) -> gym.Env:
     return env
 
 
+def render_pusht_goal(env: gym.Env, case: PushTCase) -> np.ndarray:
+    """The goal observation: a live render of the goal step, reached by replay like the start.
+
+    It is the frame replay_frames yields for the goal row, so the goal latent is the latent cache
+    entry of that row. Leaves env at the goal: reconstruct the start after calling this.
+    """
+    reconstruct_pusht_start(env, case)
+    for action in case.goal_actions:
+        env.step(action)
+    return env.render()
+
+
 def rollout_pusht(
     env: gym.Env, case: PushTCase, stats: ActionStats, blocks: torch.Tensor
 ) -> tuple[np.ndarray, TaskOutcome]:
@@ -225,6 +240,10 @@ def run_pusht_mpc(
     the environment terminated before the episode stopped is kept as metadata under
     official_reached_before_stop: it is not an official-protocol score, because the episode is
     meant to stop early.
+
+    Stopping at the first success makes the final and the reached semantic success of an MPC
+    episode the same flag, so only semantic_reached_success is reported; rows written before
+    frozen_rep_v3 also carry the identical mpc_semantic_final_success.
     """
     goal_pose = case.goal_state[BLOCK_POSE]
 
@@ -237,6 +256,7 @@ def run_pusht_mpc(
     )
     outcome = pusht_outcome(_block_poses(infos), goal_pose, reached=reached)
     outcome["official_reached_before_stop"] = outcome.pop("official_reached_goal")
+    del outcome["semantic_final_success"]  # identical to semantic_reached_success, see above
     return MPCResult(len(infos), outcome)
 
 

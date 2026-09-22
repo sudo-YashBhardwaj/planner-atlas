@@ -52,6 +52,7 @@ from planner_atlas.planning import cem, initial_proposal, model_action_bounds, s
 from planner_atlas.pusht import (
     PushTCase,
     reconstruct_pusht_start,
+    render_pusht_goal,
     rollout_pusht,
     run_pusht_mpc,
     sample_pusht_cases,
@@ -181,9 +182,9 @@ def build_pools(
     settings = planner_settings(*PRESSURES["P2"])["cem"]
     shared = []
     for index, case in enumerate(cases):
+        goal = encode_frame(base, render_pusht_goal(env, case), device)
         reconstruct_pusht_start(env, case)
         latent = encode_frame(base, env.render(), device)
-        goal = encode_frame(base, case.goal_frame, device)
         region = cem(
             base,
             latent,
@@ -418,7 +419,11 @@ def train_branch(args, spec, base_windows, held_out, *, name):
         latents, blocks, total = load_acquisitions(
             path,
             horizon=HORIZON,
-            expect={"environment": "pusht", "base_checkpoint": file_digest(args.checkpoint)},
+            expect={
+                "environment": "pusht",
+                "base_checkpoint": file_digest(args.checkpoint),
+                "dynamics_protocol": DYNAMICS_PROTOCOL,  # v2 streams were chosen for recorded goals
+            },
         )
         plans = budget // TRANSITIONS_PER_PLAN
         if plans > len(latents):
@@ -464,7 +469,7 @@ SUMMARY_KEYS = (
     "q0_regret",
     "selected_absolute_optimism",
     "selected_rollout_error",
-    "mpc_semantic_reached_success",
+    "mpc_semantic_reached_success",  # the only MPC success flag; see run_pusht_mpc
     "held_out_loss",
 )
 

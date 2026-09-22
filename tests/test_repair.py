@@ -19,6 +19,7 @@ from planner_atlas.training import (
     WINDOW_ROWS,
     LatentWindows,
     TrainableDynamics,
+    window_starts,
 )
 
 HORIZON = 5
@@ -65,6 +66,14 @@ def test_acquired_trajectories_yield_every_valid_window() -> None:
         )
     with pytest.raises(ValueError):
         repair_windows(np.zeros((1, 3, LATENT_DIM)), np.zeros((1, 2, ACTION_DIM)))
+
+
+def test_base_and_repair_windows_count_the_same_trajectory_alike() -> None:
+    """A trajectory of T executed blocks, laid out as dataset rows, yields as many block-aligned
+    base windows as repair_windows gives it: the two enumerations read the same rows."""
+    rows = HORIZON * 5 + 1
+    starts = window_starts(np.array([rows]), np.array([0]))
+    assert len(starts[starts % 5 == 0]) == len(acquired(trajectories=1)) == HORIZON - HISTORY + 1
 
 
 def test_repair_refuses_to_train_without_a_seed() -> None:

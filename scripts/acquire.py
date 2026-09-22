@@ -42,7 +42,12 @@ from planner_atlas.envs import make_env
 from planner_atlas.evaluation import encode_frame
 from planner_atlas.models.reference_lewm import ReferenceLeWM
 from planner_atlas.planning import model_action_bounds
-from planner_atlas.pusht import reconstruct_pusht_start, rollout_pusht, sample_pusht_cases
+from planner_atlas.pusht import (
+    reconstruct_pusht_start,
+    render_pusht_goal,
+    rollout_pusht,
+    sample_pusht_cases,
+)
 from planner_atlas.training import (
     DYNAMICS_PROTOCOL,
     cache_identity,
@@ -132,9 +137,9 @@ def main() -> None:
         else:
             select = planner_selector(make_planner("cem", model, bounds, *settings, seed))
 
+        goal = encode_frame(model, render_pusht_goal(env, case), args.device)
         reconstruct_pusht_start(env, case)
         latent = encode_frame(model, env.render(), args.device)
-        goal = encode_frame(model, case.goal_frame, args.device)
         acquisitions.append(
             acquire(
                 args.strategy,
