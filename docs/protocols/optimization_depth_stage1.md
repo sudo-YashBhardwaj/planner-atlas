@@ -378,3 +378,56 @@ It cannot establish that planner-targeted repair fixes what optimization exposes
 existing `results-confirm2` evidence, on a different instrument), nor that any finding generalizes
 beyond PushT, beyond this released checkpoint, or beyond q0-proposal search. It measures one fixed
 model's ranking reliability as a function of search depth on 48 held-out cases.
+
+## 22. Protocol amendment before implementation
+
+Recorded before any Stage-1 code was written, any candidate generated or any outcome computed. It
+removes two implementation ambiguities and pins the inference arithmetic. It supersedes the
+failure-policy and determinism bullets of §20 and pins the statistics of §7; the original text above
+is kept unchanged for the record. No estimand, gate, threshold, ladder or null changes.
+
+**A1. All 48 cases are required** (supersedes the §20 bullet that allowed dropping a case). Stage-1
+scientific inference requires all 48 preregistered cases. If a candidate execution fails:
+
+1. rerun it once with identical inputs;
+2. if it still fails, stop the scientific analysis before any aggregate slope or gate is computed;
+3. diagnose the operational failure without inspecting that case's scientific outcome metrics;
+4. once the correctness issue is fixed, rerun the same preregistered case.
+
+The case is never replaced, n is never reduced, and the counts 34/48, 32/48 and 29/48 are never
+rescaled. If the case cannot be recovered, Stage 1 is reported as **"protocol execution
+incomplete"**, neither GO nor NO-GO.
+
+**A2. Monte-Carlo sign-flip test** (pins §7). A **two-sided Monte-Carlo randomization test**. For a
+case-level vector `d` of length 48:
+
+```
+T_obs = |mean(d)|
+T_b   = |mean(s_b ⊙ d)|      s_b ∈ {−1, +1}^48 independent signs, b = 1..B
+p̂     = (1 + #{b : T_b ≥ T_obs}) / (B + 1)
+MC_SE = sqrt(p̂ · (1 − p̂) / B)
+```
+
+with B = 100,000. One B × 48 sign matrix is generated once, as
+`2 * np.random.default_rng(20260923).integers(0, 2, size=(100_000, 48)) - 1`, and reused for every
+preregistered case-level test. `T_obs` is computed by the same routine as `T_b` (with the all-(+1)
+sign vector). The +1 correction gives p̂ ≥ 1/(B + 1); p = 0 is never reported.
+
+**A3. Effect sizes, intervals and supplementary tests** (pins §7). For every case-level vector `d`:
+
+- Cohen's `d_z = mean(d) / sd(d, ddof=1)`;
+- 95% CI `= mean(d) ± t_{0.975, n−1} · sd(d, ddof=1) / √n`;
+- sign proportion `= #(d > 0) / #(d ≠ 0)`, descriptive;
+- gate counts are `#(d > 0)` over all 48 preregistered cases, exact zeros counting as not positive,
+  since the run is incomplete if any case is unavailable;
+- exact binomial sign test: exact zeros discarded, `X ~ Bin(#(d ≠ 0), 0.5)`, two-sided
+  `p = min(1, 2 · min(P(X ≤ k), P(X ≥ k)))` with `k = #(d > 0)`;
+- Wilcoxon signed-rank: the exact DP procedure only when technically exact (no ties in `|d|` after
+  discarding zeros); otherwise labelled approximate. Supplementary; it never affects a gate.
+
+**A4. Determinism check on case 0** (pins the §20 determinism bullet). The case is fixed now:
+**c = 0**. After its cache is complete, case 0 is rerun from the same manifest state and
+candidate-bank seed, and the following must be bitwise identical: candidate actions, predicted
+metrics, simulator outcomes where deterministic, and cached scalar metrics. If simulator
+floating-point execution prevents literal bitwise equality, stop and report before weakening this
+requirement. No other case is substituted after results are seen.
