@@ -375,29 +375,16 @@ def coverage(args, seeds: list[int]) -> dict:
     import h5py
     import torch
 
-    from planner_atlas.training import load_latent_cache, split_episodes
+    from planner_atlas.coverage import (
+        base_reference,
+        mahalanobis_to_base,
+        nearest_base_distance,
+        participation_ratio,
+    )
+    from planner_atlas.training import load_latent_cache
 
     cache = load_latent_cache(args.latent_cache, args.dataset, args.checkpoint)
-    validation = split_episodes(len(cache.lengths), validation_fraction=0.1, seed=0)
-    episode_of_row = np.repeat(np.arange(len(cache.lengths)), cache.lengths)
-    train_rows = np.flatnonzero(~validation[episode_of_row])
-    chosen = np.sort(np.random.default_rng(0).choice(train_rows, 100_000, replace=False))
-    reference = torch.from_numpy(cache.latents[chosen]).to(args.device)
-    centre = reference.mean(0)
-    precision = torch.linalg.inv(
-        torch.cov(reference.T) + 1e-6 * torch.eye(reference.shape[1], device=args.device)
-    )
-
-    def nearest(z):
-        return torch.cat([torch.cdist(part, reference).min(1).values for part in z.split(2048)])
-
-    def mahalanobis(z):
-        offset = z - centre
-        return torch.sqrt(((offset @ precision) * offset).sum(1))
-
-    def participation(z):
-        eigen = torch.linalg.eigvalsh(torch.cov(z.T))
-        return float(eigen.sum() ** 2 / (eigen**2).sum())
+    reference = base_reference(cache, device=args.device)
 
     values = defaultdict(lambda: defaultdict(list))
     stream = args.confirm_dir / "acquisition"
@@ -406,11 +393,11 @@ def coverage(args, seeds: list[int]) -> dict:
             with h5py.File(stream / f"{strategy}-seed{seed}.h5", "r") as file:
                 latents = torch.from_numpy(file["latents"][:]).to(args.device)  # [K, H + 1, D]
             flat = latents.reshape(-1, latents.shape[-1])
-            by_block = nearest(flat).reshape(len(latents), -1)
-            distance = mahalanobis(flat).reshape(len(latents), -1)
+            by_block = nearest_base_distance(flat, reference).reshape(len(latents), -1)
+            distance = mahalanobis_to_base(flat, reference).reshape(len(latents), -1)
             record = values[strategy]
             record["latent_total_variance"].append(float(torch.cov(flat.T).trace()))
-            record["participation_ratio"].append(participation(flat))
+            record["participation_ratio"].append(participation_ratio(flat))
             record["nearest_base_distance"].append(float(by_block[:, 1:].mean()))
             record["mahalanobis_to_base"].append(float(distance[:, 1:].mean()))
             record["nearest_base_by_block"].append(by_block.mean(0).cpu().numpy().tolist())

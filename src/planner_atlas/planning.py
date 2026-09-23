@@ -9,6 +9,10 @@ A CEM run with N samples and I iterations evaluates N * I plans (PlanResult.mode
 random shooting with that many samples from the same initial proposal is its matched control.
 Paired random innovations: separate generators with the same seed give both planners the same
 underlying noise, so random shooting's first N samples are exactly CEM's first iteration.
+
+Planners normally keep only what they return. With keep_candidates=True they also keep every plan
+they evaluated (PlanResult.candidates), without changing a single sampled or returned value, so a
+study of search depth can read any prefix of the search afterwards.
 """
 
 from dataclasses import dataclass
@@ -43,6 +47,15 @@ class CEMIteration:
 
 
 @dataclass(frozen=True)
+class CandidateTrace:
+    """Every plan a planner evaluated, in evaluation order; the position is the candidate index."""
+
+    plans: torch.Tensor  # [K, H, 10], exactly as scored
+    costs: torch.Tensor  # [K] predicted costs, as the planner compared them
+    iteration: torch.Tensor  # [K] the iteration that sampled each plan; zeros for random shooting
+
+
+@dataclass(frozen=True)
 class PlanResult:
     actions: torch.Tensor  # [H, 10] lowest-cost plan evaluated, on the planning device
     predicted_cost: float
@@ -50,6 +63,7 @@ class PlanResult:
     initial: Proposal
     final: Proposal  # after the last CEM update; the initial proposal for random shooting
     iterations: tuple[CEMIteration, ...] = ()
+    candidates: CandidateTrace | None = None  # only with keep_candidates=True
 
 
 def model_action_bounds(
@@ -82,6 +96,7 @@ def random_shooting(
     bounds: tuple[torch.Tensor, torch.Tensor],
     generator: torch.Generator,
     score_batch_size: int = 1024,
+    keep_candidates: bool = False,
 ) -> PlanResult:
     """Lowest-cost plan among num_samples independent samples of the initial proposal."""
     if horizon < 1 or num_samples < 1:
@@ -90,7 +105,10 @@ def random_shooting(
     plans = sample_proposal(initial, num_samples=num_samples, bounds=bounds, generator=generator)
     costs = _score(model, latent, goal, plans, score_batch_size)
     best = costs.argmin()
-    return PlanResult(plans[best], costs[best].item(), num_samples, initial, initial)
+    trace = None
+    if keep_candidates:
+        trace = CandidateTrace(plans, costs, torch.zeros(num_samples, dtype=torch.long))
+    return PlanResult(plans[best], costs[best].item(), num_samples, initial, initial, (), trace)
 
 
 @torch.no_grad()
@@ -107,6 +125,7 @@ def cem(
     generator: torch.Generator,
     min_std: float = 0.05,
     score_batch_size: int = 1024,
+    keep_candidates: bool = False,
 ) -> PlanResult:
     """Cross-entropy method returning the lowest-cost plan evaluated in any iteration.
 
@@ -120,12 +139,14 @@ def cem(
         )
     num_elites = max(1, int(num_samples * elite_fraction))
     initial = proposal = initial_proposal(horizon)
-    history, best_plans = [], []
+    history, best_plans, evaluated = [], [], []
     for _ in range(iterations):
         plans = sample_proposal(
             proposal, num_samples=num_samples, bounds=bounds, generator=generator
         )
         costs = _score(model, latent, goal, plans, score_batch_size)
+        if keep_candidates:
+            evaluated.append((plans, costs))
         elite_costs, elite_indices = costs.topk(num_elites, largest=False)
         history.append(CEMIteration(proposal, elite_costs[0].item(), elite_costs.mean().item()))
         best_plans.append(plans[elite_indices[0]])
@@ -133,6 +154,13 @@ def cem(
         std = elites.std(dim=0, correction=0).clamp(min=min_std)
         proposal = Proposal(elites.mean(dim=0).cpu(), std.cpu())
     best = min(range(iterations), key=lambda i: history[i].best_cost)
+    trace = None
+    if keep_candidates:
+        trace = CandidateTrace(
+            torch.cat([plans for plans, _ in evaluated]),
+            torch.cat([costs for _, costs in evaluated]),
+            torch.arange(iterations).repeat_interleave(num_samples),
+        )
     return PlanResult(
         best_plans[best],
         history[best].best_cost,
@@ -140,6 +168,7 @@ def cem(
         initial,
         proposal,
         tuple(history),
+        trace,
     )
 
 

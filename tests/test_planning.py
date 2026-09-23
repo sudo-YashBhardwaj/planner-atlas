@@ -169,3 +169,40 @@ def test_single_iteration_cem_equals_paired_random_shooting() -> None:
     single = run_cem(FakeModel(quadratic(torch.ones(2, 10))), num_samples=64, iterations=1)
     assert torch.equal(shooting.actions, single.actions)
     assert shooting.predicted_cost == single.predicted_cost
+
+
+@pytest.mark.parametrize("plan", PLANNERS)
+def test_keeping_candidates_changes_nothing_the_planner_returns(plan) -> None:
+    lean = plan(FakeModel(quadratic(torch.ones(2, 10))))
+    model = FakeModel(quadratic(torch.ones(2, 10)))
+    kept = plan(model, keep_candidates=True)
+    assert lean.candidates is None
+    assert torch.equal(lean.actions, kept.actions)  # bit for bit
+    assert lean.predicted_cost == kept.predicted_cost
+    assert lean.model_evaluations == kept.model_evaluations
+    assert torch.equal(lean.final.mean, kept.final.mean) and torch.equal(
+        lean.final.std, kept.final.std
+    )
+    # the trace is every plan the model scored, in order, and its best is the returned plan
+    trace = kept.candidates
+    assert torch.equal(trace.plans, model.evaluated())
+    assert len(trace.costs) == len(trace.iteration) == kept.model_evaluations
+    assert torch.equal(trace.plans[trace.costs.argmin()], kept.actions)
+
+
+def test_cem_trace_at_every_depth_is_a_prefix_of_one_run() -> None:
+    """Stage 1 reads CEM-I as the first I iterations of one six-iteration trace."""
+    objective = quadratic(torch.linspace(-0.5, 0.5, 50).view(5, 10))
+    common = {"horizon": 5, "num_samples": 256}
+    full = run_cem(FakeModel(objective), iterations=6, keep_candidates=True, **common)
+    for depth in range(1, 7):
+        truncated = run_cem(FakeModel(objective), iterations=depth, keep_candidates=True, **common)
+        prefix = 256 * depth
+        assert truncated.model_evaluations == prefix == len(truncated.candidates.plans)
+        assert torch.equal(truncated.candidates.plans, full.candidates.plans[:prefix])
+        assert torch.equal(truncated.candidates.costs, full.candidates.costs[:prefix])
+        assert torch.equal(
+            full.candidates.iteration[:prefix], torch.arange(depth).repeat_interleave(256)
+        )
+        best = full.candidates.costs[:prefix].argmin()
+        assert torch.equal(full.candidates.plans[best], truncated.actions)
