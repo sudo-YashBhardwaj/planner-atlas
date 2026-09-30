@@ -1,4 +1,4 @@
-"""The write-up's figures, drawn from the results summaries alone.
+"""The report's figures, drawn from the results summaries alone.
 
     uv run --group figures python scripts/make_figures.py \
         --summary docs/results/summary.json --output docs/figures \

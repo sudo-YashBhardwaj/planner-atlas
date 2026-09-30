@@ -1,4 +1,4 @@
-"""Every number of the write-up, computed from the experiment artifacts into one JSON summary.
+"""Every number of the report, computed from the experiment artifacts into one JSON summary.
 
     uv run python scripts/summarize_results.py --confirm-dir runs/confirm2 \
         --replay-rows runs/replay/alpha0125-merged.jsonl runs/replay/alpha025.jsonl \
