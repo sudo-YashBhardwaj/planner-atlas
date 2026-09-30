@@ -1,11 +1,14 @@
 # Planner-targeted repair of a latent world model improves matched-planner ranking, not control
 
-**Status.** Final report, 2026-09-22. The confirmatory and replay-weight results were produced by
-commit `2d6364d` (tag `results-confirm2`). Every number here is computed from the run artifacts by
-`scripts/summarize_results.py` into `docs/results/summary.json`, and every figure is drawn from that
-file by `scripts/make_figures.py`. Section labels mark each result as **CONFIRMATORY** (the one
-pre-registered hypothesis), **SECONDARY** (pre-registered as descriptive), **DESCRIPTIVE** (not
-pre-registered, measured on the confirmatory run) or **EXPLORATORY** (analysed or run after the fact).
+**Status.** Final report, 2026-09-22, corrected on 2026-09-30 (section 12 lists the corrections).
+The confirmatory and replay-weight results were produced by commit `2d6364d` (tag
+`results-confirm2`). Every number here is computed from the run artifacts by
+`scripts/summarize_results.py` into `docs/results/summary.json`, except where a sentence names
+another source, and every figure is drawn by `scripts/make_figures.py`. The complete project
+write-up, including the later studies, is [writeup.md](writeup.md). Section labels mark each result
+as **CONFIRMATORY** (the one pre-registered hypothesis), **SECONDARY** (pre-registered as
+descriptive), **DESCRIPTIVE** (not pre-registered, measured on the confirmatory run) or
+**EXPLORATORY** (analysed or run after the fact).
 
 ## Abstract
 
@@ -66,12 +69,23 @@ The project answers three questions, in order:
 | 4 | Planner-selected and random acquisition give different downstream benefits: planner data improves same-planner ranking, random data improves closed-loop MPC, and held-out loss predicts neither well. | same experiment; replay-weight analysis | SECONDARY / EXPLORATORY |
 | L | Cross-planner generalization of the ranking gain is not established. | P3 own-plan check | EXPLORATORY, unresolved |
 
+Claim 1 is descriptive. A later pre-registered study (section 11) tested one form of it, for random
+shooting over a fixed proposal: whether decision regret grows with search faster than an
+exchangeable-error optimizer's-curse null predicts. It found no such excess. That study did not
+test CEM pressure, so it qualifies claim 1 without refuting it.
+
 ## 3 Setting and method
 
 ### 3.1 Model
 
 The released LeWM checkpoints (`quentinll/lewm-pusht` and `quentinll/lewm-tworooms`) are loaded
-bit-identically to the official route. Frames at 224×224 pass through a ViT-tiny encoder (CLS token)
+strictly into the project's reference implementation, built from stable-worldmodel's modules and a
+Hugging Face ViT. Development and audit checks (not in the committed summary) found the following.
+The dynamics rollout and the planning cost reproduce upstream's official outputs exactly (max
+|Δ| = 0). The encoder is not bitwise identical: cuDNN runs the ViT's patch convolution in TF32
+(PyTorch's default on this GPU), so latents differ from full-fp32 encoding by up to 4.6e-3, which
+moved a plan's cost by at most 0.09 on costs of about 39. Every branch shares the same encoded
+latents, so results are internally consistent, but exact values can differ on other hardware. Frames at 224×224 pass through a ViT-tiny encoder (CLS token)
 and a BatchNorm projector into a 192-d latent z. A 6-layer causal transformer predictor, with the
 released dropout of 0.1 and a BatchNorm output projection, maps the history of latents and action
 embeddings to the next latent. An action block is 5 raw 2-d actions, so a 5-block plan spans 25
@@ -98,7 +112,7 @@ acquisition contexts only from training episodes.
 ### 3.3 Planners and pressure
 
 CEM and random shooting sample 5-block plans from a Gaussian proposal, clamped to the valid action
-range. Four pressures P0–P3 give CEM 128×1, 128×2, 256×4 and 512×6 samples × iterations, with 10%
+range. Four pressures, P0 to P3, give CEM 128×1, 128×2, 256×4 and 512×6 samples × iterations, with 10%
 elites. Random shooting gets the same total samples in a single iteration. The initial proposal q0 is
 N(0, I) over normalized action blocks.
 
@@ -152,7 +166,7 @@ plan using only pre-execution information, then pays 25 simulator transitions to
 
 The ensemble members are the released checkpoint trained for one epoch (13,947 steps) on
 independent bootstraps of the 1,785,252 training windows. This lowers held-out loss from 0.00997 to
-0.0058–0.0059.
+0.0058 to 0.0059.
 
 ### 4.3 Repair
 
@@ -197,7 +211,7 @@ fixed model on independently drawn cases, so its uncertainty is a standard error
 | --- | --- | --- |
 | protocol registered: hypothesis, metric, seeds, analysis, stopping rule | 2026-09-20, before any confirmatory branch | `docs/protocols/confirmatory-protocol.md` (`b05621fe…`) |
 | code fixed: seeded dropout, live-render latents, T − 2 repair windows, random held-out subsample | 2026-09-20 22:18 | commit `2d6364d` |
-| amendment 1: fresh manifest (seed 307), seeds 4–15 | 2026-09-20 23:09 | `docs/protocols/confirmatory-amendment-1.md` (`32d69d8d…`) |
+| amendment 1: fresh manifest (seed 307), seeds 4 to 15 | 2026-09-20 23:09 | `docs/protocols/confirmatory-amendment-1.md` (`32d69d8d…`) |
 | frozen manifest | 2026-09-20 | `docs/protocols/confirmatory-manifest.json` (`5e945883…`) |
 | acquisition: 36 streams | 2026-09-20 23:10 to 09-21 01:15 | streams record commit `2d6364d` |
 | repair and evaluation: 49 branches × 48 cases | 2026-09-21 01:19 to 03:02 | `grid.jsonl`, 2,352 rows, commit and digests in every row |
@@ -229,12 +243,13 @@ from this experiment." Section 7.2 reports the deviation from it.
   errors: amplification rises roughly fivefold, and the chosen plan's rollout error triples relative
   to a typical proposal's.
 - **TwoRoom.** Amplification is positive but flat across pressure: 18.1, 26.4, 19.9 and 25.9 for
-  CEM, and 13–24 for random shooting. A typical proposal is pessimistic there (mean q0 optimism
+  CEM, and 13 to 24 for random shooting. A typical proposal is pessimistic there (mean q0 optimism
   about −13) while CEM's chosen plan is optimistic (+5 to +13).
 
 The Atlas predates the repair protocol. It used the code of commits `7a7f75a` (PushT) and `7d62e8c`
 (TwoRoom), and it encodes goals from recorded frames. It is descriptive evidence for claim 1, not a
-test.
+test. Section 11 reports a later test of whether the growth of decision regret with search
+exceeds the ordinary optimizer's curse.
 
 ### 6.2 What each strategy acquires (DESCRIPTIVE)
 
@@ -266,7 +281,7 @@ one. The strategies faced identical contexts in every seed (checked from the str
 
 | per-seed planner − random planner-region regret | |
 | --- | --- |
-| seeds 4–15 | −0.00523, −0.00611, −0.01309, −0.01106, −0.00858, −0.01320, −0.01623, −0.01084, −0.00025, −0.01150, +0.00224, −0.00528 |
+| seeds 4 to 15 | −0.00523, −0.00611, −0.01309, −0.01106, −0.00858, −0.01320, −0.01623, −0.01084, −0.00025, −0.01150, +0.00224, −0.00528 |
 | mean, SD, SE | −0.008261, 0.005504, 0.001589 |
 | 95% CI | [−0.011759, −0.004764] |
 | **exact sign-flip permutation test (pre-registered)** | **p = 0.0015** (6 of 4,096 assignments) |
@@ -342,10 +357,15 @@ base batches. Yet:
 - the best MPC comes from random data;
 - the branch with the best held-out loss (continued) has the worst mean planner-region regret.
 
-The released model has the worst held-out loss of all, 0.00989, because it was trained on
-recorded-pixel latents. Continued training cuts that loss by a third, yet the released model's
-regret is no worse than the continued branches' mean: 0.0559 against 0.0591 [0.0557, 0.0625] on the
-planner region, and 0.0394 against 0.0450 [0.0415, 0.0484] on q0. Held-out prediction loss is
+The released model has the worst held-out loss of all, 0.00989. Part of that gap is a domain
+shift: the released model was trained on recorded dataset pixels, while held-out loss here is
+measured on live renders. The shift is not the whole explanation. The superseded exploratory grid
+(section 7.4) measured held-out loss on recorded-pixel latents over a smaller held-out sample.
+There, continued training also lowered the released model's loss, from 0.0083 to between 0.0056
+and 0.0057 (from that grid's rows, not the committed summary). Continued training cuts the live-render
+loss by a third, yet the released model's regret is no worse than the continued branches' mean:
+0.0559 against 0.0591 [0.0557, 0.0625] on the planner region, and 0.0394 against 0.0450
+[0.0415, 0.0484] on q0. Held-out prediction loss is
 therefore not a sufficient scalar measure of a world model's usefulness to a planner.
 
 ## 7 Exploratory analyses
@@ -369,7 +389,7 @@ A design note was recorded before its branches were trained (`docs/protocols/rep
 `5e7d7dd6…`). It is not a pre-registration.
 
 - **Design.** The weight α on acquired data took the values 0.125 and 0.25 (16 or 32 of 128 windows
-  per batch), with random and planner streams for seeds 4–15. That is 48 new branches on the same
+  per batch), with random and planner streams for seeds 4 to 15. That is 48 new branches on the same
   code, manifest, pools and settings.
 - **Reused branches.** α = 0 is the continued control and α = 0.5 the confirmatory branches.
 - **Integrity checks.** The replay rows record commit `2d6364d`, and their shared pools are identical
@@ -411,8 +431,11 @@ forgetting explains the random-vs-planner control gap.
 
 ### 7.3 Coverage of the acquired data (EXPLORATORY, descriptive)
 
-Latent statistics of executed blocks 1–5 against 100,000 training-split latents of the live cache.
-Values are mean ± SE over 12 seeds.
+Latent statistics of the acquired trajectories against 100,000 training-split latents of the live
+cache. Values are mean ± SE over 12 seeds. Total variance and participation ratio are computed over
+blocks 0 to 5, so they include the start latent that the two streams share context by context. The
+distances use the executed blocks 1 to 5 only. (The original version of this section, and the
+`reference` string in `docs/results/summary.json`, said every row excluded the start.)
 
 | | random | planner |
 | --- | ---: | ---: |
@@ -424,7 +447,10 @@ Values are mean ± SE over 12 seeds.
 | nearest-base distance, blocks 1 → 5 | 2.16 → 3.33 | 1.93 → 3.11 |
 
 Planner data is much more task-concentrated. It is not obviously narrower: its total variance is 3%
-lower but its participation ratio is 5% higher. It lies somewhat closer to the base (expert)
+lower but its participation ratio is 5% higher. Recomputed without the shared start, the variance is
+192.1 against 184.2 (−4.1%) and the participation ratio 78.3 against 81.7 (+4.4%), with the same
+direction in 12/12 seeds (computed from the stored streams on 2026-09-30; not in the committed
+summary). It lies somewhat closer to the base (expert)
 distribution than random data, which drifts further off-manifold at every block.
 
 A possible hypothesis is that random exploration covers off-nominal and recovery states that MPC
@@ -432,7 +458,7 @@ needs after its own deviations. No experiment here tests this; it is not a resul
 
 ### 7.4 The superseded exploratory grid (EXPLORATORY, superseded)
 
-The grid that motivated the confirmatory experiment ran 3 seeds (0–2) at budgets of 2,500, 10,000 and
+The grid that motivated the confirmatory experiment ran 3 seeds (0 to 2) at budgets of 2,500, 10,000 and
 40,000, at commit `2fcb9e7`. An audit then found four defects:
 - unseeded dropout in repair, so branches were not reproducible;
 - training latents from recorded pixels instead of live renders;
@@ -532,9 +558,9 @@ name and sha256.
 | Atlas rows (PushT, TwoRoom) | `fd573d9f…` / `70d79bd5…` |
 
 **Determinism.** Repair and evaluation seed every generator. A replay branch rerun in a separate
-process reproduced all 48 rows bit for bit on the same machine. Encoding the same frames in a
-different batch composition changes latents at float-rounding level, so bitwise equality across
-machines or batch layouts is not promised.
+process reproduced all 48 rows bit for bit on the same machine. The encoder's TF32 patch
+convolution makes latents depend on the GPU and on memory layout, by up to 4.6e-3 against full fp32
+(section 3.1), so bitwise equality across machines or batch layouts is not promised.
 
 **Commands.** The full pipeline is in the README (section "Reproduction"): environment, latent
 cache and ensemble, acquisition, repair grid, summary and figures. It takes about 4 GPU-hours on an
@@ -552,5 +578,57 @@ uv run --group figures python scripts/make_figures.py \
 ```
 
 `alpha0125-merged.jsonl` joins two halves of the α = 0.125 run, which a session teardown
-interrupted. The halves hold disjoint branches, and the summary script rejects any branch that does
-not cover exactly the 48 manifest cases.
+interrupted. The halves share exactly one branch, random at seed 4, which the second half reran as
+the determinism check; its 48 rows are identical in both halves and the merge keeps them once. The
+summary script rejects any branch that does not cover exactly the 48 manifest cases.
+
+## 11 Later studies after this report
+
+Two later studies asked whether a stronger claim could be made. Each had its own pre-declared gates
+or pre-registration, and neither retrained nor re-analysed a confirmatory branch. Whether they count
+as follow-ups under the stopping rule of section 5 is a judgment call, and they are reported in full
+either way. Both are closed. The Stage-1 numbers below are from
+`docs/results/optimization_depth_stage1_summary.json`. Full accounts are in
+[writeup.md](writeup.md) (sections 11 and 12), [results/optimization_depth_stage1.md](results/optimization_depth_stage1.md)
+and [results/scientific_ledger.md](results/scientific_ledger.md).
+
+- **Planner-conditioned reliability (E1), closed before any outcome.** A matched/cross repair matrix
+  of CEM-P2 against random shooting at 1,024 samples required two pre-declared validity gates, both
+  computed outcome-free with the base model on the consumed manifest. Both failed:
+  - the proposal gate: median per-dimension Bhattacharyya coefficient 0.909, against a threshold of
+    at most 0.88;
+  - the decision-set gate: median normalized energy distance 0.0995, against a threshold of at
+    least 0.10.
+
+  The planners differ in how deeply they optimize, not in where they search. These values were
+  computed in-session and are not stored on disk.
+- **Optimization depth (Stage 1), pre-registered, NO-GO.** Pre-registered in `ebdfa8a`, amended in
+  `8b47d24` before implementation, and executed at `65d3f00` on the same 48 cases. It asked whether
+  deeper search over a fixed proposal makes the model progressively worse at choosing the best
+  available plan. The answer was NO-GO:
+  - Gate G1 failed. The per-case slope of latent regret against log2 N was +4.02 [−0.04, +8.08],
+    positive in 28 of 48 cases (34 needed), d_z 0.29 (0.5 needed), Monte-Carlo sign-flip p 0.051.
+  - The rise did not exceed an exchangeable-error null (G2: −2.21, 20 of 48).
+  - Task regret showed no consistent trend (G3: 28 of 48, d_z 0.23), while the chosen plans' true
+    task cost fell overall.
+  - Optimism is strongly concentrated in the predicted-best tail (+28.95, positive in 41 of 48
+    cases, d_z 1.05), the direction ordinary best-of-N selection predicts.
+
+  This is the caveat attached to claim 1 above.
+
+## 12 Corrections (2026-09-30)
+
+No result changed. These corrections fix what the report said about its results:
+
+- **Section 3.1.** The released model was described as loaded "bit-identically to the official
+  route". That holds for the rollout and cost, not for the encoder, which runs in TF32. The section
+  now also names the implementation the checkpoints load into.
+- **Section 6.5.** The released model's held-out loss was attributed entirely to its recorded-pixel
+  training. The domain shift explains only part of the gap, as the exploratory grid's
+  recorded-pixel measurement shows.
+- **Section 7.3.** The coverage table's convention was misstated. The two spread statistics include
+  the shared start latent. Without it, the gaps are −4.1% and +4.4% rather than −3.4% and +5.0%,
+  in the same direction in 12/12 seeds.
+- **Section 10.** The two halves of the α = 0.125 run were described as disjoint. They share the
+  determinism-check branch, and the merge keeps it once.
+- **Section 2.** Claim 1 now carries the Stage-1 caveat.

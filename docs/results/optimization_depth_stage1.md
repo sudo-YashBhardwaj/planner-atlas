@@ -1,6 +1,6 @@
-# Stage 1 — optimization depth and decision reliability: result
+# Stage 1 result: optimization depth and decision reliability
 
-**Verdict: NO-GO — G1 failed** (frozen decision matrix, case 4). The proposed optimization-depth
+**Verdict: NO-GO, G1 failed** (frozen decision matrix, case 4). The proposed optimization-depth
 ICML thesis is not supported and is closed. No experiment follows from this result.
 
 ## Provenance
@@ -31,11 +31,11 @@ Latent costs are sums over 192 dimensions; optimism = realized − predicted (po
 | N | predicted C | realized C | signed opt | abs opt | R_latent | J_selected | J_oracle | R_task | success |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | 32 | 169.2 ± 14.4 | 196.6 ± 16.8 | 27.3 ± 8.4 | 33.0 ± 8.0 | 18.5 ± 7.2 | 0.238 ± 0.026 | 0.192 ± 0.022 | 0.046 ± 0.012 | 0.29 |
-| 64 | 148.8 ± 14.3 | 169.2 ± 15.8 | 20.5 ± 4.6 | 27.1 ± 3.8 | 12.3 ± 4.0 | 0.217 ± 0.025 | 0.166 ± 0.020 | 0.050 ± 0.012 | 0.33 |
+| 64 | 148.8 ± 14.3 | 169.2 ± 15.8 | 20.4 ± 4.6 | 27.1 ± 3.8 | 12.3 ± 4.0 | 0.217 ± 0.025 | 0.166 ± 0.020 | 0.050 ± 0.011 | 0.33 |
 | 128 | 134.8 ± 13.9 | 157.5 ± 15.1 | 22.7 ± 5.5 | 29.5 ± 4.8 | 18.9 ± 5.7 | 0.202 ± 0.022 | 0.149 ± 0.019 | 0.053 ± 0.010 | 0.35 |
-| 256 | 121.2 ± 12.8 | 153.0 ± 15.2 | 31.8 ± 7.1 | 38.4 ± 6.4 | 24.0 ± 5.9 | 0.193 ± 0.022 | 0.137 ± 0.018 | 0.055 ± 0.010 | 0.35 |
+| 256 | 121.2 ± 12.8 | 153.0 ± 15.2 | 31.8 ± 7.1 | 38.4 ± 6.4 | 24.0 ± 5.9 | 0.192 ± 0.022 | 0.137 ± 0.018 | 0.055 ± 0.010 | 0.35 |
 | 512 | 103.0 ± 11.8 | 147.9 ± 15.9 | 44.9 ± 10.4 | 51.3 ± 9.7 | 35.8 ± 9.0 | 0.191 ± 0.025 | 0.119 ± 0.016 | 0.072 ± 0.014 | 0.40 |
-| 1024 | 93.3 ± 11.0 | 134.2 ± 15.6 | 40.8 ± 9.7 | 47.1 ± 9.0 | 29.4 ± 6.8 | 0.176 ± 0.024 | 0.114 ± 0.016 | 0.062 ± 0.013 | 0.40 |
+| 1024 | 93.3 ± 11.0 | 134.2 ± 15.6 | 40.8 ± 9.7 | 47.1 ± 9.0 | 29.4 ± 6.7 | 0.176 ± 0.024 | 0.114 ± 0.016 | 0.062 ± 0.013 | 0.40 |
 | 2048 | 77.1 ± 10.4 | 135.6 ± 16.2 | 58.5 ± 12.0 | 63.8 ± 11.4 | 44.1 ± 8.4 | 0.178 ± 0.024 | 0.100 ± 0.015 | 0.078 ± 0.014 | 0.42 |
 | 4096 | 69.1 ± 10.3 | 119.6 ± 16.2 | 50.5 ± 11.5 | 57.6 ± 10.8 | 39.9 ± 7.5 | 0.163 ± 0.024 | 0.086 ± 0.014 | 0.077 ± 0.015 | 0.44 |
 
@@ -57,9 +57,9 @@ residuals produce when exchanged across candidates. `corr(C, o)` per case: media
 [−0.118, +0.326], range [−0.447, +0.841], positive in 67% of cases, which by protocol caveat 8.1 C
 makes the null potentially conservative. This is a diagnostic only and did not alter G2.
 
-**Task curves (G3).** Over N = 256…4096, J_selected 0.193 → 0.163 (slope −0.0073, CI
+**Task curves (G3).** Over N = 256…4096, J_selected 0.192 → 0.163 (slope −0.0073, CI
 [−0.0135, −0.0010]); J_oracle 0.137 → 0.086; R_task 0.055 → 0.077 with no consistent case-level
-trend. Frozen reading: **D — task regret flat; latent degradation not clearly task-relevant.**
+trend. Frozen reading: **D: task regret flat; latent degradation not clearly task-relevant.**
 
 ## Characterization (not gates)
 
@@ -70,26 +70,26 @@ trend. Frozen reading: **D — task regret flat; latent degradation not clearly 
 
 | bin | signed opt | abs opt | rollout err | terminal err | true J | success | rank agr. (latent / task) |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 0–1% | 32.3 | 40.0 | 0.097 | 0.203 | 0.202 | 0.35 | 0.26 / 0.19 |
-| 1–5% | 21.1 | 31.1 | 0.074 | 0.149 | 0.240 | 0.26 | 0.25 / 0.12 |
-| 5–10% | 15.7 | 26.6 | 0.062 | 0.117 | 0.260 | 0.20 | 0.17 / 0.05 |
-| 10–25% | 12.0 | 22.9 | 0.051 | 0.092 | 0.277 | 0.11 | 0.31 / 0.08 |
-| 25–50% | 8.5 | 19.2 | 0.042 | 0.071 | 0.293 | 0.06 | 0.35 / 0.05 |
-| 50–100% | 3.3 | 17.8 | 0.040 | 0.066 | 0.311 | 0.03 | 0.54 / 0.11 |
+| 0 to 1% | 32.3 | 39.9 | 0.097 | 0.203 | 0.202 | 0.35 | 0.26 / 0.19 |
+| 1 to 5% | 21.1 | 31.1 | 0.074 | 0.149 | 0.240 | 0.26 | 0.25 / 0.12 |
+| 5 to 10% | 15.7 | 26.6 | 0.062 | 0.117 | 0.260 | 0.20 | 0.17 / 0.05 |
+| 10 to 25% | 11.9 | 22.9 | 0.051 | 0.091 | 0.277 | 0.11 | 0.31 / 0.08 |
+| 25 to 50% | 8.5 | 19.2 | 0.042 | 0.071 | 0.293 | 0.06 | 0.35 / 0.05 |
+| 50 to 100% | 3.3 | 17.8 | 0.040 | 0.066 | 0.311 | 0.03 | 0.54 / 0.11 |
 
 ## CEM vs compute-matched RS (secondary, descriptive)
 
 | I (evaluations) | predicted C, CEM / RS | signed opt | R_latent | R_task | J_selected |
 | --- | --- | --- | --- | --- | --- |
-| 1 (256) | 121.2 / 121.2 | 31.8 / 31.8 | 24.0 / 24.0 | 0.055 / 0.055 | 0.193 / 0.193 |
+| 1 (256) | 121.2 / 121.2 | 31.8 / 31.8 | 24.0 / 24.0 | 0.055 / 0.055 | 0.192 / 0.192 |
 | 2 (512) | 61.0 / 103.0 | 55.8 / 44.9 | 47.0 / 35.8 | 0.081 / 0.072 | 0.163 / 0.191 |
-| 3 (768) | 38.0 / 96.2 | 53.7 / 44.9 | 50.6 / 34.2 | 0.081 / 0.062 | 0.128 / 0.178 |
+| 3 (768) | 38.0 / 96.1 | 53.7 / 44.9 | 50.6 / 34.2 | 0.081 / 0.062 | 0.128 / 0.178 |
 | 4 (1024) | 21.2 / 93.3 | 56.4 / 40.8 | 59.0 / 29.4 | 0.079 / 0.062 | 0.105 / 0.176 |
 | 5 (1280) | 15.9 / 87.9 | 50.6 / 50.3 | 52.4 / 36.5 | 0.072 / 0.066 | 0.091 / 0.176 |
 | 6 (1536) | 12.5 / 81.5 | 50.6 / 58.4 | 52.0 / 42.7 | 0.066 / 0.072 | 0.081 / 0.177 |
 
 At matched model evaluations CEM reaches much better true task cost (CEM − RS at I = 6:
-−0.096 ± 0.021) while its latent regret is on average larger (+9 to +30, SEs 10–14) and its task
+−0.096 ± 0.021) while its latent regret is on average larger (+9 to +30, SEs 10 to 14) and its task
 regret shows no consistent difference.
 
 ## Geometry / OOD (descriptive)
@@ -143,3 +143,23 @@ Goodhart effects and is not claimed to be novel enough for an ICML contribution.
 The absence of an effect: it failed to meet a preregistered bar on 48 consumed PushT cases, one
 released checkpoint and q0-proposal search, and says nothing about other environments, models or
 planners.
+
+## Corrections (2026-09-30)
+
+Nine table cells and one quoted value had been rounded twice: first to four significant digits in a
+working printout, then again to the precision shown. They were recomputed from the frozen outputs
+and rounded once.
+
+- **RS-N table.**
+  - Signed optimism at N = 64 is 20.4, not 20.5, and its R_task SE is 0.011, not 0.012.
+  - J_selected at N = 256 is 0.192, not 0.193. The task-curve sentence now reads 0.192 → 0.163.
+  - The R_latent SE at N = 1024 is 6.7, not 6.8.
+- **Rank bins.**
+  - Absolute optimism in the 0 to 1% bin is 39.9, not 40.0.
+  - In the 10 to 25% bin, signed optimism is 11.9, not 12.0, and terminal error 0.091, not 0.092.
+- **CEM against RS.**
+  - J_selected at I = 1 is 0.192 for both, not 0.193.
+  - RS predicted cost at I = 3 is 96.1, not 96.2.
+
+No gate, verdict or conclusion changes. The em and en dashes were also removed, and the title was
+reworded.

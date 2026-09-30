@@ -1,6 +1,6 @@
 # Scientific ledger
 
-The project's claims by status, as of 2026-09-24. Each entry names its evidence and its standing:
+The project's claims by status, as of 2026-09-24 (corrected 2026-09-30). Each entry names its evidence and its standing:
 **confirmatory** (pre-registered test), **descriptive**, or **exploratory**. Numbers are PushT with
 the released LeWM checkpoint unless stated.
 
@@ -15,7 +15,8 @@ the released LeWM checkpoint unless stated.
    Planner-selected acquisition has 2.6× random's rollout error and signed optimism +48.4 against
    +8.8; uncertainty selection finds comparable error but less optimism and task relevance. Stage 1
    shows the same concentration in the predicted-good tail (top-1% − bottom-50% optimism +29.0,
-   d_z 1.05), **at the level expected from ordinary best-of-N selection** (Stage-1 G2).
+   41/48 cases, d_z 1.05). Its G2 found no excess over an exchangeable-error null in how decision
+   regret grows with search (random shooting over a fixed proposal; CEM was not tested).
 3. **Random repair improves closed-loop MPC more than planner repair.** *Secondary, descriptive.*
    MPC semantic success: random +0.099 over the continued control (sign-flip p = 0.0015); planner
    +0.010, CI spanning zero.
